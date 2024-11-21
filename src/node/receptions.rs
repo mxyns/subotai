@@ -45,7 +45,12 @@ impl resources::Resources {
 impl Receptions {
     fn new(resources: &resources::Resources) -> Receptions {
         Receptions {
-            iter: resources.reception_updates.lock().unwrap().add_rx().into_iter(),
+            iter: resources
+                .reception_updates
+                .lock()
+                .unwrap()
+                .add_rx()
+                .into_iter(),
             timeout: None,
             kind_filter: None,
             sender_filter: None,
@@ -96,17 +101,61 @@ impl Iterator for Receptions {
                 Some(resources::ReceptionUpdate::RpcReceived(rpc)) => {
                     if let Some(ref kind_filter) = self.kind_filter {
                         match rpc.kind {
-                            rpc::Kind::Ping => if *kind_filter != KindFilter::Ping { continue; },
-                            rpc::Kind::PingResponse => if *kind_filter != KindFilter::PingResponse { continue; },
-                            rpc::Kind::Store(_) => if *kind_filter != KindFilter::Store { continue; },
-                            rpc::Kind::MassStore(_) => if *kind_filter != KindFilter::MassStore { continue; },
-                            rpc::Kind::StoreResponse(_) => if *kind_filter != KindFilter::StoreResponse { continue; },
-                            rpc::Kind::Locate(_) => if *kind_filter != KindFilter::Locate { continue; },
-                            rpc::Kind::LocateResponse(_) => if *kind_filter != KindFilter::LocateResponse { continue; },
-                            rpc::Kind::Retrieve(_) => if *kind_filter != KindFilter::Retrieve { continue; },
-                            rpc::Kind::RetrieveResponse(_) => if *kind_filter != KindFilter::RetrieveResponse { continue; },
-                            rpc::Kind::Probe(_) => if *kind_filter != KindFilter::Probe { continue; },
-                            rpc::Kind::ProbeResponse(_) => if *kind_filter != KindFilter::ProbeResponse { continue; },
+                            rpc::Kind::Ping => {
+                                if *kind_filter != KindFilter::Ping {
+                                    continue;
+                                }
+                            }
+                            rpc::Kind::PingResponse => {
+                                if *kind_filter != KindFilter::PingResponse {
+                                    continue;
+                                }
+                            }
+                            rpc::Kind::Store(_) => {
+                                if *kind_filter != KindFilter::Store {
+                                    continue;
+                                }
+                            }
+                            rpc::Kind::MassStore(_) => {
+                                if *kind_filter != KindFilter::MassStore {
+                                    continue;
+                                }
+                            }
+                            rpc::Kind::StoreResponse(_) => {
+                                if *kind_filter != KindFilter::StoreResponse {
+                                    continue;
+                                }
+                            }
+                            rpc::Kind::Locate(_) => {
+                                if *kind_filter != KindFilter::Locate {
+                                    continue;
+                                }
+                            }
+                            rpc::Kind::LocateResponse(_) => {
+                                if *kind_filter != KindFilter::LocateResponse {
+                                    continue;
+                                }
+                            }
+                            rpc::Kind::Retrieve(_) => {
+                                if *kind_filter != KindFilter::Retrieve {
+                                    continue;
+                                }
+                            }
+                            rpc::Kind::RetrieveResponse(_) => {
+                                if *kind_filter != KindFilter::RetrieveResponse {
+                                    continue;
+                                }
+                            }
+                            rpc::Kind::Probe(_) => {
+                                if *kind_filter != KindFilter::Probe {
+                                    continue;
+                                }
+                            }
+                            rpc::Kind::ProbeResponse(_) => {
+                                if *kind_filter != KindFilter::ProbeResponse {
+                                    continue;
+                                }
+                            }
                         }
                     }
 
@@ -118,7 +167,9 @@ impl Iterator for Receptions {
 
                     return Some(rpc);
                 }
-                Some(resources::ReceptionUpdate::StateChange(node::State::ShuttingDown)) => self.shutdown = true,
+                Some(resources::ReceptionUpdate::StateChange(node::State::ShuttingDown)) => {
+                    self.shutdown = true
+                }
                 _ => (),
             }
         }
@@ -136,7 +187,9 @@ mod tests {
     fn produces_rpcs_but_not_ticks() {
         let alpha = node::Node::new().unwrap();
         let beta = node::Node::new().unwrap();
-        alpha.bootstrap(&beta.resources.local_info().address).unwrap();
+        alpha
+            .bootstrap(&beta.resources.local_info().address)
+            .unwrap();
 
         assert_eq!(alpha.resources.table.len(), 2); // One for self, and one for beta
         let beta_receptions = beta
@@ -165,8 +218,12 @@ mod tests {
             .from_senders(allowed)
             .of_kind(KindFilter::Ping);
 
-        assert!(receiver.bootstrap(&alpha.resources.local_info().address).is_ok());
-        assert!(receiver.bootstrap(&beta.resources.local_info().address).is_ok());
+        assert!(receiver
+            .bootstrap(&alpha.resources.local_info().address)
+            .is_ok());
+        assert!(receiver
+            .bootstrap(&beta.resources.local_info().address)
+            .is_ok());
 
         assert!(alpha.resources.ping(&receiver.local_info().address).is_ok());
         assert!(beta.resources.ping(&receiver.local_info().address).is_ok());
@@ -174,5 +231,3 @@ mod tests {
         assert_eq!(receptions.count(), 1);
     }
 }
-
-

@@ -1,267 +1,266 @@
 use super::*;
-use std::net;
-use std::str::FromStr;
 use hash::SubotaiHash;
 use hash::HASH_SIZE;
 use rand::{thread_rng, Rng};
+use std::net;
+use std::str::FromStr;
 
-fn node_info_no_net(id : SubotaiHash) -> NodeInfo {
-   NodeInfo {
-      id : id,
-      address : net::SocketAddr::from_str("0.0.0.0:0").unwrap(),
-   }
+fn node_info_no_net(id: SubotaiHash) -> NodeInfo {
+    NodeInfo {
+        id,
+        address: net::SocketAddr::from_str("0.0.0.0:0").unwrap(),
+    }
 }
 
 #[test]
 fn inserting_and_retrieving_specific_node() {
-   let node_info = node_info_no_net(SubotaiHash::random());
-   let table = Table::new(SubotaiHash::random(), Default::default());
-   table.update_node(node_info.clone());
-   assert_eq!(table.specific_node(&node_info.id), Some(node_info));
+    let node_info = node_info_no_net(SubotaiHash::random());
+    let table = Table::new(SubotaiHash::random(), Default::default());
+    table.update_node(node_info.clone());
+    assert_eq!(table.specific_node(&node_info.id), Some(node_info));
 }
 
 #[test]
 fn measuring_table_length() {
-   let table = Table::new(SubotaiHash::random(), Default::default());
-   let mut conflicts = 0usize;
-   for _ in 0..50 {
-      match table.update_node(node_info_no_net(SubotaiHash::random())) {
-         UpdateResult::CausedConflict(_) => conflicts += 1,
-         _ => (),
-      };
-   }
+    let table = Table::new(SubotaiHash::random(), Default::default());
+    let mut conflicts = 0usize;
+    for _ in 0..50 {
+        if let UpdateResult::CausedConflict(_) =
+            table.update_node(node_info_no_net(SubotaiHash::random()))
+        {
+            conflicts += 1
+        };
+    }
 
-   assert_eq!(50, table.len() + conflicts);
+    assert_eq!(50, table.len() + conflicts);
 }
 
 #[test]
 fn inserting_and_removing() {
-   let table = Table::new(SubotaiHash::random(), Default::default());
-   let info = node_info_no_net(SubotaiHash::random());
-   table.update_node(info.clone());
-   assert!(table.specific_node(&info.id).is_some());
-   table.remove_node(&info.id);
-   assert!(table.specific_node(&info.id).is_none());
-
+    let table = Table::new(SubotaiHash::random(), Default::default());
+    let info = node_info_no_net(SubotaiHash::random());
+    table.update_node(info.clone());
+    assert!(table.specific_node(&info.id).is_some());
+    table.remove_node(&info.id);
+    assert!(table.specific_node(&info.id).is_none());
 }
 
 #[test]
 fn inserting_in_a_full_bucket_causes_eviction_conflict() {
-   let mut parent_id = SubotaiHash::blank();
-   parent_id.raw[1] = 1; // This will guarantee all nodes will fall on the same bucket.
+    let mut parent_id = SubotaiHash::blank();
+    parent_id.raw[1] = 1; // This will guarantee all nodes will fall on the same bucket.
 
-   let table = Table::new(parent_id, Default::default());
+    let table = Table::new(parent_id, Default::default());
 
-   table.fill_bucket(8, table.configuration.k_factor as u8);
+    table.fill_bucket(8, table.configuration.k_factor as u8);
 
-   // When we add another node to the same bucket, we cause a conflict.
-   let mut id = SubotaiHash::blank();
-   id.raw[0] = 0xFF;
-   let info = node_info_no_net(id);
-   match table.update_node(info) {
-      UpdateResult::CausedConflict(_) => (),
-      _ => panic!(),
-   }
+    // When we add another node to the same bucket, we cause a conflict.
+    let mut id = SubotaiHash::blank();
+    id.raw[0] = 0xFF;
+    let info = node_info_no_net(id);
+    match table.update_node(info) {
+        UpdateResult::CausedConflict(_) => (),
+        _ => panic!(),
+    }
 }
 
 #[test]
-fn lookup_for_a_stored_node() { 
-   let table = Table::new(SubotaiHash::random(), Default::default());
-   let node = node_info_no_net(SubotaiHash::random());
-   table.update_node(node.clone());
+fn lookup_for_a_stored_node() {
+    let table = Table::new(SubotaiHash::random(), Default::default());
+    let node = node_info_no_net(SubotaiHash::random());
+    table.update_node(node.clone());
 
-   assert_eq!(table.lookup(&node.id, 20, None), LookupResult::Found(node));
+    assert_eq!(table.lookup(&node.id, 20, None), LookupResult::Found(node));
 }
 
 #[test]
 fn lookup_for_self() {
-   let parent_id = SubotaiHash::random();
-   let table = Table::new(parent_id.clone(), Default::default());
-   let node = node_info_no_net(parent_id.clone());
-   table.update_node(node.clone());
+    let parent_id = SubotaiHash::random();
+    let table = Table::new(parent_id.clone(), Default::default());
+    let node = node_info_no_net(parent_id.clone());
+    table.update_node(node.clone());
 
-   assert_eq!(table.lookup(&parent_id, 20, None), LookupResult::Found(node));
+    assert_eq!(
+        table.lookup(&parent_id, 20, None),
+        LookupResult::Found(node)
+    );
 }
 
 #[test]
 fn ascending_lookup_on_a_sparse_table() {
-   let parent_id = SubotaiHash::random();
-   let table = Table::new(parent_id.clone(), Default::default());
-   for i in (10..50).filter(|x| x%2 == 0) {
-     table.fill_bucket(i, 2);
-   }
-   let mut id = parent_id;
-   id.flip_bit(8); // Bucket 8
-   if let LookupResult::ClosestNodes(nodes) = table.lookup(&id, 5, None) {
-      assert_eq!(nodes.len(), 5);
+    let parent_id = SubotaiHash::random();
+    let table = Table::new(parent_id.clone(), Default::default());
+    for i in (10..50).filter(|x| x % 2 == 0) {
+        table.fill_bucket(i, 2);
+    }
+    let mut id = parent_id;
+    id.flip_bit(8); // Bucket 8
+    if let LookupResult::ClosestNodes(nodes) = table.lookup(&id, 5, None) {
+        assert_eq!(nodes.len(), 5);
 
-      // Ensure they are ordered by ascending distance
-      for (current_node, next_node) in nodes.iter().zip(nodes.iter().skip(1)) {
-         assert!((&current_node.id ^ &id) <= (&next_node.id ^ &id)); 
-      }
-   }
-   else {
-      panic!("We shouldn't have found the node!");
-   }
+        // Ensure they are ordered by ascending distance
+        for (current_node, next_node) in nodes.iter().zip(nodes.iter().skip(1)) {
+            assert!((&current_node.id ^ &id) <= (&next_node.id ^ &id));
+        }
+    } else {
+        panic!("We shouldn't have found the node!");
+    }
 }
 
 #[test]
 fn descending_lookup_on_a_sparse_table() {
-   let parent_id = SubotaiHash::random();
-   let table = Table::new(parent_id.clone(), Default::default());
-   for i in (10..50).filter(|x| x%2 == 0) {
-     table.fill_bucket(i, 2);
-   }
-   let mut id = parent_id;
-   id.flip_bit(51); // Bucket 51
-   id.raw[0] = 0xFF;
-   if let LookupResult::ClosestNodes(nodes) = table.lookup(&id, 5, None) {
-      assert_eq!(nodes.len(), 5);
+    let parent_id = SubotaiHash::random();
+    let table = Table::new(parent_id.clone(), Default::default());
+    for i in (10..50).filter(|x| x % 2 == 0) {
+        table.fill_bucket(i, 2);
+    }
+    let mut id = parent_id;
+    id.flip_bit(51); // Bucket 51
+    id.raw[0] = 0xFF;
+    if let LookupResult::ClosestNodes(nodes) = table.lookup(&id, 5, None) {
+        assert_eq!(nodes.len(), 5);
 
-      // Ensure they are ordered by ascending distance
-      for (current_node, next_node) in nodes.iter().zip(nodes.iter().skip(1)) {
-         assert!((&current_node.id ^ &id) <= (&next_node.id ^ &id)); 
-      }
-   }
-   else {
-      panic!("We shouldn't have found the node!");
-   }
+        // Ensure they are ordered by ascending distance
+        for (current_node, next_node) in nodes.iter().zip(nodes.iter().skip(1)) {
+            assert!((&current_node.id ^ &id) <= (&next_node.id ^ &id));
+        }
+    } else {
+        panic!("We shouldn't have found the node!");
+    }
 }
 
 #[test]
 fn lookup_on_a_sparse_table() {
-   let parent_id = SubotaiHash::random();
-   let table = Table::new(parent_id.clone(), Default::default());
-   for i in (10..50).filter(|x| x%2 == 0) {
-     table.fill_bucket(i, 2);
-   }
-   let mut id = parent_id;
-   id.flip_bit(25); // Bucket 25
-   id.raw[0] = 0xFF;
-   if let LookupResult::ClosestNodes(nodes) = table.lookup(&id, 5, None) {
-      assert_eq!(nodes.len(), 5);
+    let parent_id = SubotaiHash::random();
+    let table = Table::new(parent_id.clone(), Default::default());
+    for i in (10..50).filter(|x| x % 2 == 0) {
+        table.fill_bucket(i, 2);
+    }
+    let mut id = parent_id;
+    id.flip_bit(25); // Bucket 25
+    id.raw[0] = 0xFF;
+    if let LookupResult::ClosestNodes(nodes) = table.lookup(&id, 5, None) {
+        assert_eq!(nodes.len(), 5);
 
-      // Ensure they are ordered by ascending distance
-      for (current_node, next_node) in nodes.iter().zip(nodes.iter().skip(1)) {
-         assert!((&current_node.id ^ &id) <= (&next_node.id ^ &id)); 
-      }
-   }
-   else {
-      panic!("We shouldn't have found the node!");
-   }
+        // Ensure they are ordered by ascending distance
+        for (current_node, next_node) in nodes.iter().zip(nodes.iter().skip(1)) {
+            assert!((&current_node.id ^ &id) <= (&next_node.id ^ &id));
+        }
+    } else {
+        panic!("We shouldn't have found the node!");
+    }
 }
 
 #[test]
 fn lookup_with_blacklist() {
-   let table = Table::new(SubotaiHash::random(), Default::default());
-   let blacklist = vec![node_info_no_net(SubotaiHash::random()); 5];
-   let normal_node = node_info_no_net(SubotaiHash::random());
+    let table = Table::new(SubotaiHash::random(), Default::default());
+    let blacklist = vec![node_info_no_net(SubotaiHash::random()); 5];
+    let normal_node = node_info_no_net(SubotaiHash::random());
 
-   for node in &blacklist {
-      table.update_node(node.clone());
-   }
-  
-   let blacklist = blacklist.iter().map(|info: &NodeInfo| info.id.clone()).collect::<Vec<SubotaiHash>>();
+    for node in &blacklist {
+        table.update_node(node.clone());
+    }
 
-   table.update_node(normal_node.clone());
-   
-   if let LookupResult::ClosestNodes(mut nodes) = table.lookup(&SubotaiHash::random(), 5, Some(&blacklist)) {
-      assert_eq!(nodes.len(), 1);
-      assert_eq!(nodes.pop().unwrap().id, normal_node.id);
-   } else {
-      panic!("We shouldn't have found the node!");
-   }
+    let blacklist = blacklist
+        .iter()
+        .map(|info: &NodeInfo| info.id.clone())
+        .collect::<Vec<SubotaiHash>>();
+
+    table.update_node(normal_node.clone());
+
+    if let LookupResult::ClosestNodes(mut nodes) =
+        table.lookup(&SubotaiHash::random(), 5, Some(&blacklist))
+    {
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes.pop().unwrap().id, normal_node.id);
+    } else {
+        panic!("We shouldn't have found the node!");
+    }
 }
 
 #[test]
 fn efficient_bounce_lookup_on_a_randomized_table() {
-   let parent_id = SubotaiHash::random();
-   let table = Table::new(parent_id.clone(), Default::default());
-   for _ in 0..300 {
-      // We create ids that will distribute more or less uniformly over the buckets.
-      let mut id = parent_id.clone();
-      id.mutate_random_bits(3);
-      table.update_node(node_info_no_net(id));
-   }
+    let parent_id = SubotaiHash::random();
+    let table = Table::new(parent_id.clone(), Default::default());
+    for _ in 0..300 {
+        // We create ids that will distribute more or less uniformly over the buckets.
+        let mut id = parent_id.clone();
+        id.mutate_random_bits(3);
+        table.update_node(node_info_no_net(id));
+    }
 
-   // We construct an origin node from which to calculate distances for the lookup.
-   let mut id = parent_id.clone();
-   id.mutate_random_bits(20);
-   if let LookupResult::ClosestNodes(nodes) = table.lookup(&id, 20, None) {
-      assert_eq!(nodes.len(), 20);
+    // We construct an origin node from which to calculate distances for the lookup.
+    let mut id = parent_id.clone();
+    id.mutate_random_bits(20);
+    if let LookupResult::ClosestNodes(nodes) = table.lookup(&id, 20, None) {
+        assert_eq!(nodes.len(), 20);
 
-      // Ensure they are ordered by ascending distance by comparing to a brute force
-      // sorted list of nodes
-      let mut ordered_nodes = 
-         table
-         .all_nodes()
-         .collect::<Vec<NodeInfo>>();
-      ordered_nodes.sort_by_key(|ref info| &info.id ^ &id);
+        // Ensure they are ordered by ascending distance by comparing to a brute force
+        // sorted list of nodes
+        let mut ordered_nodes = table.all_nodes().collect::<Vec<NodeInfo>>();
+        ordered_nodes.sort_by_key(|info| &info.id ^ &id);
 
-      for (a, b) in nodes.iter().zip(ordered_nodes.iter()) {
-         assert_eq!(a, b);
-      }
+        for (a, b) in nodes.iter().zip(ordered_nodes.iter()) {
+            assert_eq!(a, b);
+        }
 
-      // Different way to locate nodes
-      let nodes_iterator = table.closest_nodes_to(&id);
-      for (a, b) in nodes.into_iter().zip(nodes_iterator) {
-         assert_eq!(a,b);
-      }
-   }
-   else {
-      panic!("We shouldn't have found the node!");
-   }
+        // Different way to locate nodes
+        let nodes_iterator = table.closest_nodes_to(&id);
+        for (a, b) in nodes.into_iter().zip(nodes_iterator) {
+            assert_eq!(a, b);
+        }
+    } else {
+        panic!("We shouldn't have found the node!");
+    }
 }
 
 #[test]
 fn oldest_bucket_returns_the_first_bucket_that_never_got_probed() {
-   let table = Table::new(SubotaiHash::random(), Default::default());
+    let table = Table::new(SubotaiHash::random(), Default::default());
 
-   // We mark a random bucket as probed.
-   table.mark_bucket_as_probed(&SubotaiHash::random());
+    // We mark a random bucket as probed.
+    table.mark_bucket_as_probed(&SubotaiHash::random());
 
-   assert_eq!(table.oldest_bucket(), (0, None));
+    assert_eq!(table.oldest_bucket(), (0, None));
 }
 
 #[test]
 fn oldest_bucket_when_all_buckets_were_probed() {
-   let id = SubotaiHash::random();
-   let table = Table::new(id.clone(), Default::default());
+    let id = SubotaiHash::random();
+    let table = Table::new(id.clone(), Default::default());
 
-   table.mark_bucket_as_probed(&id);
-   for i in 0..HASH_SIZE {
-      let mut id_for_bucket = id.clone();
-      id_for_bucket.flip_bit(i);
-      table.mark_bucket_as_probed(&id_for_bucket);
-   }
+    table.mark_bucket_as_probed(&id);
+    for i in 0..HASH_SIZE {
+        let mut id_for_bucket = id.clone();
+        id_for_bucket.flip_bit(i);
+        table.mark_bucket_as_probed(&id_for_bucket);
+    }
 
-   let (index, time) = table.oldest_bucket();
-   assert_eq!(index, 0);
-   assert!(time.is_some());
+    let (index, time) = table.oldest_bucket();
+    assert_eq!(index, 0);
+    assert!(time.is_some());
 }
 
 impl Table {
-   pub fn fill_bucket(&self, bucket_index : usize, fill_quantity : u8) {
-      // Otherwise this helper function becomes quite complex.
-      assert!(bucket_index > 7);
-      for i in 0..fill_quantity {
-         let mut id = self.parent_id.clone();
-         id.flip_bit(bucket_index);
+    pub fn fill_bucket(&self, bucket_index: usize, fill_quantity: u8) {
+        // Otherwise this helper function becomes quite complex.
+        assert!(bucket_index > 7);
+        for i in 0..fill_quantity {
+            let mut id = self.parent_id.clone();
+            id.flip_bit(bucket_index);
 
-         id.raw[0] = i as u8;
-         let info = node_info_no_net(id);
-         self.update_node(info);
-      }
-   }
+            id.raw[0] = i;
+            let info = node_info_no_net(id);
+            self.update_node(info);
+        }
+    }
 }
 
 impl SubotaiHash {
-   pub fn mutate_random_bits(&mut self, number_of_bits : u8) {
-      for _ in 0..number_of_bits {
-         
-         let index = thread_rng().gen_index(0..HASH_SIZE);
-         self.flip_bit(index);
-      }
-   }
+    pub fn mutate_random_bits(&mut self, number_of_bits: u8) {
+        for _ in 0..number_of_bits {
+            let index = thread_rng().gen_index(0..HASH_SIZE);
+            self.flip_bit(index);
+        }
+    }
 }
-

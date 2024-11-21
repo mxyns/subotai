@@ -2,9 +2,9 @@
 //!
 //! The factory module allows you to create Subotai nodes with specific configuration options,
 //! such as network constants and different UDP ports.
-use std::cmp;
 use crate::node::Node;
 use crate::SubotaiResult;
+use std::cmp;
 
 /// Allows the construction of nodes with custom network constants, specific ports,
 /// and other options.
@@ -32,7 +32,11 @@ impl Factory {
     /// Creates a node with the configuration values specified in the factory. Defaults to the
     /// same values as calling Node::new().
     pub fn create_node(&self) -> SubotaiResult<Node> {
-        Node::with_configuration(self.inbound_port, self.outbound_port, self.configuration.clone())
+        Node::with_configuration(
+            self.inbound_port,
+            self.outbound_port,
+            self.configuration.clone(),
+        )
     }
 
     /// Inbound UDP port for incoming RPCs.
@@ -52,7 +56,10 @@ impl Factory {
     /// network-wide lookup.
     pub fn alpha(mut self, alpha: usize) -> Self {
         self.configuration.alpha = alpha;
-        self.configuration.impatience = cmp::min(usize::saturating_sub(alpha, 1), self.configuration.impatience);
+        self.configuration.impatience = cmp::min(
+            usize::saturating_sub(alpha, 1),
+            self.configuration.impatience,
+        );
         self
     }
 
@@ -63,7 +70,10 @@ impl Factory {
     /// If we send a request to ALPHA nodes during a lookup wave, we will start
     /// the next wave after we receive 'ALPHA - IMPATIENCE' responses.
     pub fn impatience(mut self, impatience: usize) -> Self {
-        self.configuration.impatience = cmp::min(usize::saturating_sub(self.configuration.alpha, 1), impatience);
+        self.configuration.impatience = cmp::min(
+            usize::saturating_sub(self.configuration.alpha, 1),
+            impatience,
+        );
         self
     }
 

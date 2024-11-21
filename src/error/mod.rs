@@ -30,7 +30,9 @@ impl fmt::Display for SubotaiError {
         match *self {
             SubotaiError::NoResponse => write!(f, "Timed out while waiting for node response."),
             SubotaiError::OffGridError => write!(f, "The node is currently off-grid."),
-            SubotaiError::NodeNotFound => write!(f, "Could not find the node locally or in the network."),
+            SubotaiError::NodeNotFound => {
+                write!(f, "Could not find the node locally or in the network.")
+            }
             SubotaiError::OutOfBounds => write!(f, "Index falls out of routing table."),
             SubotaiError::StorageError => write!(f, "Corrupted Storage."),
             SubotaiError::UnresponsiveNetwork => write!(f, "Network too small or unresponsive."),
@@ -41,6 +43,7 @@ impl fmt::Display for SubotaiError {
 }
 
 impl Error for SubotaiError {
+    #[allow(deprecated)]
     fn description(&self) -> &str {
         match *self {
             SubotaiError::NoResponse => "Timed out with no response",

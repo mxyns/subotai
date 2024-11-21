@@ -2,8 +2,8 @@
 //! and quick. Here are some of the ideas that differentiate it from other DHTs:
 //!
 //! * **Externally synchronous, internally concurrent**: All public methods are blocking and return
-//!  a sane result or an explicit timeout. Internally however, subotai is fully concurrent,
-//!  and parallel operations will often help each other complete.
+//!    a sane result or an explicit timeout. Internally however, subotai is fully concurrent,
+//!    and parallel operations will often help each other complete.
 //!
 //! * **Introduce nodes first, resolve conflicts later**: Subotai differs to the original Kademlia
 //!   implementation in that it gives temporary priority to newer contacts for full buckets. This
@@ -11,25 +11,25 @@
 //!   against basic `DDoS` attacks in the form of a defensive state.
 //!
 //! * **Flexible storage**: Any key in the key space can hold any number of different entries with
-//!   independent expiration times. 
+//!   independent expiration times.
 //!
 //! * **Impatient**: Subotai is "impatient", in that it will attempt to never wait for responses from
-//! an unresponsive node. Queries are sent in parallel where possible, and processes continue when 
-//! a subset of nodes have responded.
+//!   an unresponsive node. Queries are sent in parallel where possible, and processes continue when
+//!   a subset of nodes have responded.
 //!
 //! Subotai supports automatic key republishing, providing a good guarantee that an entry will remain
 //! in the network until a configurable expiration date. Manually storing the entry in the network
 //! again will refresh the expiration date.
 //!
 //! Subotai also supports caching to balance intense traffic around a given key.
-#![allow(dead_code, unknown_lints, wrong_self_convention)]
+#![allow(dead_code, unknown_lints, clippy::wrong_self_convention)]
 
-pub mod node;
 pub mod hash;
+pub mod node;
 mod routing;
-mod storage;
 mod rpc;
+mod storage;
 
 mod error;
-pub use error::SubotaiError as SubotaiError;
-pub use error::SubotaiResult as SubotaiResult;
+pub use error::SubotaiError;
+pub use error::SubotaiResult;

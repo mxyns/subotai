@@ -44,14 +44,19 @@ impl Storage {
     pub fn new(parent_id: SubotaiHash, configuration: node::Configuration) -> Storage {
         Storage {
             key_groups: RwLock::new(HashMap::with_capacity(configuration.max_storage)),
-            parent_id: parent_id,
-            configuration: configuration,
+            parent_id,
+            configuration,
         }
     }
 
     /// Returns number of entries.
     pub fn len(&self) -> usize {
-        self.key_groups.read().unwrap().values().flat_map(|group| group.iter()).count()
+        self.key_groups
+            .read()
+            .unwrap()
+            .values()
+            .flat_map(|group| group.iter())
+            .count()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -61,28 +66,41 @@ impl Storage {
     /// Retrieves all entries in a key_group.
     pub fn retrieve(&self, key: &SubotaiHash) -> Option<Vec<StorageEntry>> {
         self.clear_expired_entries();
-        if let Some(key_group) = self.key_groups.read().unwrap().get(key) {
-            Some(key_group.iter().cloned().map(|extended| extended.entry).collect())
-        } else {
-            None
-        }
+        self.key_groups.read().unwrap().get(key).map(|key_group| {
+            key_group
+                .iter()
+                .cloned()
+                .map(|extended| extended.entry)
+                .collect()
+        })
     }
 
     /// Stores an entry in a key_group, with an expiration date, if it wasn't present already.
     /// If it was present, it keeps the latest expiration time and marks as not ready for republishing.
-    pub fn store(&self, key: &SubotaiHash, entry: &StorageEntry, expiration: &DateTime<Utc>) -> StoreResult {
+    pub fn store(
+        &self,
+        key: &SubotaiHash,
+        entry: &StorageEntry,
+        expiration: &DateTime<Utc>,
+    ) -> StoreResult {
         if self.is_big_blob(entry) {
             return StoreResult::BlobTooBig;
         }
 
         // Expiration time is clamped to a reasonable value.
-        let expiration = cmp::min(*expiration, Utc::now() + Duration::hours(self.configuration.base_expiration_time_hrs));
+        let expiration = cmp::min(
+            *expiration,
+            Utc::now() + Duration::hours(self.configuration.base_expiration_time_hrs),
+        );
         let initial_length = self.len();
 
         let mut key_groups = self.key_groups.write().unwrap();
         if key_groups.contains_key(key) {
             let key_group = key_groups.get_mut(key).unwrap();
-            let already_existed = if let Some(preexisting_pair) = key_group.iter_mut().find(|stored_pair| stored_pair.entry == *entry) {
+            let already_existed = if let Some(preexisting_pair) = key_group
+                .iter_mut()
+                .find(|stored_pair| stored_pair.entry == *entry)
+            {
                 preexisting_pair.expiration = cmp::max(preexisting_pair.expiration, expiration); // Take the latest expiration time.
                 preexisting_pair.republish_ready = false;
                 true
@@ -95,7 +113,7 @@ impl Storage {
                 }
                 let new_entry = ExtendedEntry {
                     entry: entry.clone(),
-                    expiration: expiration,
+                    expiration,
                     republish_ready: false,
                 };
                 key_group.push(new_entry);
@@ -107,7 +125,7 @@ impl Storage {
             let mut key_group = KeyGroup::new();
             let new_entry = ExtendedEntry {
                 entry: entry.clone(),
-                expiration: expiration,
+                expiration,
                 republish_ready: false,
             };
             key_group.push(new_entry);
@@ -146,20 +164,36 @@ impl Storage {
     pub fn mark_all_as_ready(&self) {
         let mut key_groups = self.key_groups.write().unwrap();
         let extended_entries = key_groups.values_mut().flat_map(|group| group.iter_mut());
-        for &mut ExtendedEntry { ref mut republish_ready, .. } in extended_entries {
+        for &mut ExtendedEntry {
+            ref mut republish_ready,
+            ..
+        } in extended_entries
+        {
             *republish_ready = true;
         }
     }
 
     /// Retrieves all entries stored in this node, that have a shorter distance to a different,
     /// target node. This is used to republish keys when becoming in contact with a new node.
-    pub fn get_entries_closer_to(&self, target: &SubotaiHash) -> Vec<(SubotaiHash, Vec<(StorageEntry, DateTime<Utc>)>)> {
+    pub fn get_entries_closer_to(
+        &self,
+        target: &SubotaiHash,
+    ) -> Vec<(SubotaiHash, Vec<(StorageEntry, DateTime<Utc>)>)> {
         self.key_groups
             .read()
             .unwrap()
             .iter()
             .filter(|&(key, _)| (key ^ target) < (key ^ &self.parent_id))
-            .map(|(key, keygroup)| (key.clone(), keygroup.iter().cloned().map(|ext| (ext.entry, ext.expiration)).collect::<Vec<_>>()))
+            .map(|(key, keygroup)| {
+                (
+                    key.clone(),
+                    keygroup
+                        .iter()
+                        .cloned()
+                        .map(|ext| (ext.entry, ext.expiration))
+                        .collect::<Vec<_>>(),
+                )
+            })
             .collect()
     }
 
@@ -172,7 +206,13 @@ impl Storage {
         for (key, group) in key_groups.iter() {
             let ready_entries_in_group: Vec<(StorageEntry, DateTime<Utc>)> = group
                 .iter()
-                .filter_map(|ext| if ext.republish_ready { Some((ext.entry.clone(), ext.expiration)) } else { None })
+                .filter_map(|ext| {
+                    if ext.republish_ready {
+                        Some((ext.entry.clone(), ext.expiration))
+                    } else {
+                        None
+                    }
+                })
                 .collect();
 
             if !ready_entries_in_group.is_empty() {
@@ -187,7 +227,6 @@ impl Storage {
 mod tests {
     use super::*;
     use crate::hash::SubotaiHash;
-    use {node};
 
     #[test]
     fn storing_and_retrieving_on_same_key() {
@@ -218,9 +257,21 @@ mod tests {
         let key_beta = SubotaiHash::random();
         let expiration = Utc::now() + Duration::minutes(30);
 
-        storage.store(&key_alpha, &StorageEntry::Value(SubotaiHash::random()), &expiration);
-        storage.store(&key_alpha, &StorageEntry::Value(SubotaiHash::random()), &expiration);
-        storage.store(&key_beta, &StorageEntry::Value(SubotaiHash::random()), &expiration);
+        storage.store(
+            &key_alpha,
+            &StorageEntry::Value(SubotaiHash::random()),
+            &expiration,
+        );
+        storage.store(
+            &key_alpha,
+            &StorageEntry::Value(SubotaiHash::random()),
+            &expiration,
+        );
+        storage.store(
+            &key_beta,
+            &StorageEntry::Value(SubotaiHash::random()),
+            &expiration,
+        );
 
         // Not ready by default
         assert_eq!(storage.get_all_ready_entries().len(), 0);
@@ -242,8 +293,16 @@ mod tests {
         let other_node_id = SubotaiHash::random_at_distance(&key, 5);
 
         let expiration = Utc::now() + Duration::minutes(30);
-        storage.store(&key, &StorageEntry::Value(SubotaiHash::random()), &expiration);
-        storage.store(&close_key, &StorageEntry::Value(SubotaiHash::random()), &expiration);
+        storage.store(
+            &key,
+            &StorageEntry::Value(SubotaiHash::random()),
+            &expiration,
+        );
+        storage.store(
+            &close_key,
+            &StorageEntry::Value(SubotaiHash::random()),
+            &expiration,
+        );
 
         let entries = storage.get_entries_closer_to(&other_node_id);
 
