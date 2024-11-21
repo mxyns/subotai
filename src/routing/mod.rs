@@ -16,6 +16,7 @@ mod tests;
 /// The structure employs least-recently seen eviction. Conflicts generated
 /// by evicting a node by inserting a newer one remain tracked, so they can
 /// be resolved later.
+#[derive(Debug)]
 pub struct Table {
    buckets       : Vec<sync::RwLock<Bucket> >,
    parent_id     : SubotaiHash,

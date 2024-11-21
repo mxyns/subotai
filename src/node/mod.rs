@@ -272,10 +272,13 @@ impl Node {
             break;
          }
 
-         if let Ok((_, source)) = message {
-            if let Ok(rpc) = rpc::Rpc::deserialize(&buffer) {
-               let resources_clone = resources.clone();
-               thread::spawn(move || { resources_clone.process_incoming_rpc(rpc, source) } );
+         if let Ok((len, source)) = message {
+            match rpc::Rpc::deserialize(&buffer[0..len]) {
+               Ok(rpc) => {
+                  let resources_clone = resources.clone();
+                  thread::spawn(move || { resources_clone.process_incoming_rpc(rpc, source) } );
+               }
+               Err(err) => eprintln!("Could not deserialize message: {err}")
             }
          }
 
@@ -312,6 +315,8 @@ impl Node {
    /// a `store` rpc for said entry in the past hour.
    #[allow(unused_must_use)]
    fn maintenance_loop(resources: sync::Arc<resources::Resources>) {
+      // FIXME do not ping ourselves
+
       let hour = Duration::hours(1).to_std().unwrap();
       let mut last_republish = Instant::now();
 

@@ -1,4 +1,5 @@
-use std::{net, sync, cmp};
+use std::{net, sync, cmp, io};
+use std::net::{SocketAddr, UdpSocket};
 use crate::rpc::Rpc;
 use crate::hash::SubotaiHash;
 use crate::node::receptions;
@@ -15,6 +16,7 @@ use crate::{node, routing, rpc, storage, SubotaiError, SubotaiResult};
 /// involving multiple nodes have longer timeouts derived from that value.
 /// The node layer above is in charge of parallelizing those operations 
 /// by spawning threads when adequate.
+#[derive(Debug)]
 pub struct Resources {
    pub id                : SubotaiHash,
    pub table             : routing::Table,
@@ -76,17 +78,17 @@ impl Resources {
    }
 
    /// Pings a node via its IP address, blocking until ping response.
-   pub fn ping(&self, target: &net::SocketAddr) -> SubotaiResult<()> {
+   pub fn ping(&self, target: &SocketAddr) -> SubotaiResult<()> {
       let rpc = Rpc::ping(self.local_info());
       let packet = rpc.serialize();
       let responses = self.receptions()
          .during(Duration::seconds(self.configuration.network_timeout_s).to_std().unwrap())
          .of_kind(receptions::KindFilter::PingResponse)
-         .filter(|rpc| rpc.sender.address.ip() == target.ip() || 
+         .filter(|rpc| rpc.sender.address.ip() == target.ip() ||
                        target.ip() == net::IpAddr::from_str("0.0.0.0").unwrap())
          .take(1);
-      self.outbound.send_to(&packet, target)?;
-      println!("Outbound sent {} bytes from {} to {}", packet.len(), rpc.sender.address, target);
+
+      udp_send_to(&self.outbound, target, &rpc, &packet)?;
 
       match responses.count() {
          1 => Ok(()),
@@ -98,7 +100,7 @@ impl Resources {
    pub fn ping_and_forget(&self, target: &net::SocketAddr) -> SubotaiResult<()> {
       let rpc = Rpc::ping(self.local_info());
       let packet = rpc.serialize();
-      self.outbound.send_to(&packet, target)?;
+      udp_send_to(&self.outbound, &target, &rpc, &packet)?;
       Ok(())
    }
 
@@ -140,7 +142,7 @@ impl Resources {
    /// It is also possible that the node will discard some of the intermediate nodes due
    /// to size concerns.
    ///
-   /// For a more thorough mapping of the surroundings of a node, or if you specifically 
+   /// For a more thorough mapping of the surroundings of a node, or if you specifically
    /// need to know the K closest nodes to a given ID, use probe.
    pub fn locate(&self, target: &SubotaiHash) -> SubotaiResult<routing::NodeInfo> {
       // If the node is already present in our table, we are done early.
@@ -178,7 +180,7 @@ impl Resources {
             .flat_map(|vec| vec.into_iter())
             .chain(former_closest)
             .collect();
-       
+
          // We restore the order and remove duplicates, to finally return the closest ALPHA.
          closest.sort_by(|info_a, info_b| (&info_a.id ^ target).cmp(&(&info_b.id ^ target)));
          closest.dedup();
@@ -223,7 +225,7 @@ impl Resources {
             .flat_map(|vec| vec.into_iter())
             .chain(former_closest)
             .collect();
-       
+
          // We restore the order and remove duplicates, to finally return the closest ALPHA.
          closest.sort_by(|info_a, info_b| (&info_a.id ^ target).cmp(&(&info_b.id ^ target)));
          closest.dedup();
@@ -282,7 +284,7 @@ impl Resources {
 
          // The cache candidate is the closest node that hasn't found the value.
          cache_candidate = closest.first().cloned();
-       
+
          // If we found it, we cache the values and we're done.
          if let Some(retrieved) = responses.iter().filter_map(|rpc| rpc.successfully_retrieved(key)).next() {
             if let Some(ref candidate) = cache_candidate {
@@ -290,7 +292,7 @@ impl Resources {
                for entry in &retrieved {
                   let rpc = Rpc::store(self.local_info(), key.clone(), entry.clone(), expiration);
                   let packet = rpc.serialize();
-                  let _ = self.outbound.send_to(&packet, candidate.address);
+                  let _ = udp_send_to(&self.outbound, &candidate.address, &rpc, &packet);
                }
             }
             return WaveStrategy::Halt(retrieved);
@@ -308,7 +310,7 @@ impl Resources {
 
       self.wave(seeds, strategy, rpc, timeout)
    }
-  
+
    ///// the expiration time drops substantially the further away the parent node is from the key, past
    ///// a threshold.
    fn calculate_cache_expiration(&self, candidate_id: &SubotaiHash, key: &SubotaiHash) -> DateTime<Utc> {
@@ -319,11 +321,11 @@ impl Resources {
       Utc::now() + Duration::minutes(self.configuration.base_cache_time_mins / expiration_factor)
    }
 
-   /// Wave operation. Contacts nodes from a list by sending a specific RPC. Then, it 
+   /// Wave operation. Contacts nodes from a list by sending a specific RPC. Then, it
    /// extracts new node candidates from their response by applying a strategy function.
    ///
    /// The strategy function takes a list of Rpc responses and the IDs contacted so far
-   /// in the wave, outputs the next nodes to contact, and decides whether to stop 
+   /// in the wave, outputs the next nodes to contact, and decides whether to stop
    /// the wave by producing a Some(T) in its second return value.
    ///
    /// The wave terminates when the strategy function provides no new nodes, when a
@@ -338,19 +340,19 @@ impl Resources {
 
       // We loop as long as we have not run out of time and there is something to query.
       while Instant::now() < deadline && !nodes_to_query.is_empty() {
-         // Here, we only know who to listen to, for how long, and the number of 
-         // responses. Whether or not a response is interesting is down to the 
+         // Here, we only know who to listen to, for how long, and the number of
+         // responses. Whether or not a response is interesting is down to the
          // strategy function.
          let senders: Vec<SubotaiHash> = nodes_to_query.iter().map(|info| &info.id).cloned().collect();
          let responses = self.receptions()
             .from_senders(senders)
             .during(Duration::seconds(self.configuration.network_timeout_s).to_std().unwrap())
             .take(cmp::min(nodes_to_query.len(), usize::saturating_sub(self.configuration.alpha, self.configuration.impatience)));
-      
-         // We query all the nodes with the wave RPC, and collect the responses, 
+
+         // We query all the nodes with the wave RPC, and collect the responses,
          // ignoring any slackers based on the IMPATIENCE factor.
          for node in &nodes_to_query {
-            self.outbound.send_to(&packet, node.address)?;
+            udp_send_to(&self.outbound, &node.address, &rpc, &packet)?;
          }
          queried.append(&mut nodes_to_query);
          let responses: Vec<_> = responses.collect();
@@ -370,7 +372,7 @@ impl Resources {
       if index > crate::hash::HASH_SIZE {
          return Err(SubotaiError::OutOfBounds);
       }
-      
+
       self.prune_bucket(index)?;
 
       let id = SubotaiHash::random_at_distance(&self.id, index);
@@ -392,7 +394,7 @@ impl Resources {
       for node in self.table.nodes_from_bucket(index) {
          self.ping_and_forget(&node.address)?;
       }
-      
+
       for response in responses {
          nodes.retain(|node| node.id != response.sender.id);
       }
@@ -419,13 +421,13 @@ impl Resources {
          .during(Duration::seconds(self.configuration.network_timeout_s).to_std().unwrap())
          .filter(|rpc| rpc.successfully_stored(&cloned_key))
          .take(self.configuration.k_factor / 3);
-      
+
       let collection: Vec<_> = entries.into_iter().map(|(entry, time)| (entry, time)).collect();
       let rpc = Rpc::mass_store(self.local_info(), key, collection );
       let packet = rpc.serialize();
 
       for candidate in &storage_candidates {
-         self.outbound.send_to(&packet, candidate.address)?;
+         udp_send_to(&self.outbound, &candidate.address, &rpc, &packet)?;
       }
 
       if responses.count() == self.configuration.k_factor / 3 {
@@ -455,7 +457,7 @@ impl Resources {
       let packet = rpc.serialize();
 
       for candidate in &storage_candidates {
-         self.outbound.send_to(&packet, candidate.address)?;
+         udp_send_to(&self.outbound, &candidate.address, &rpc, &packet)?;
       }
 
       if responses.count() == self.configuration.k_factor / 3 {
@@ -466,7 +468,7 @@ impl Resources {
    }
 
    pub fn revert_conflicts_for_sender(&self, sender_id: &SubotaiHash) {
-      if let Some((index, _)) = 
+      if let Some((index, _)) =
          self.conflicts.lock().unwrap().iter()
          .enumerate()
          .find(|&(_,&routing::EvictionConflict{ref evicted, ..})| sender_id == &evicted.id )
@@ -500,36 +502,36 @@ impl Resources {
    fn handle_ping(&self, sender: routing::NodeInfo) -> SubotaiResult<()> {
       let rpc = Rpc::ping_response(self.local_info());
       let packet = rpc.serialize();
-      self.outbound.send_to(&packet, sender.address)?;
+      udp_send_to(&self.outbound, &sender.address, &rpc, &packet)?;
       Ok(())
    }
 
    fn handle_store(&self, payload: sync::Arc<rpc::StorePayload>,  sender: routing::NodeInfo) -> SubotaiResult<()> {
-      let store_result = self.storage.store(&payload.key, 
+      let store_result = self.storage.store(&payload.key,
                                             &payload.entry,
                                             &DateTime::from(payload.expiration.clone()));
       let rpc = Rpc::store_response(self.local_info(), payload.key.clone(), store_result);
       let packet = rpc.serialize();
-      self.outbound.send_to(&packet, sender.address)?;
+      udp_send_to(&self.outbound, &sender.address, &rpc, &packet)?;
 
       Ok(())
    }
 
    fn handle_mass_store(&self, payload: sync::Arc<rpc::MassStorePayload>, sender: routing::NodeInfo) -> SubotaiResult<()> {
-      
+
       let all_stores_succeeded = payload.entries_and_expirations.iter().all(|&(ref entry, ref expiration)| {
          self.storage.store(&payload.key, entry, expiration) == storage::StoreResult::Success
       });
 
-      let store_result = if all_stores_succeeded { 
-         storage::StoreResult::Success 
-      } else { 
-         storage::StoreResult::MassStoreFailed 
+      let store_result = if all_stores_succeeded {
+         storage::StoreResult::Success
+      } else {
+         storage::StoreResult::MassStoreFailed
       };
 
       let rpc = Rpc::store_response(self.local_info(), payload.key.clone(), store_result);
       let packet = rpc.serialize();
-      self.outbound.send_to(&packet, sender.address)?;
+      udp_send_to(&self.outbound, &sender.address, &rpc, &packet)?;
 
       Ok(())
    }
@@ -543,10 +545,10 @@ impl Resources {
          .collect();
 
       let rpc = Rpc::probe_response(self.local_info(),
-                                    closest, 
+                                    closest,
                                     payload.id_to_probe.clone());
       let packet = rpc.serialize();
-      self.outbound.send_to(&packet, sender.address)?;
+      udp_send_to(&self.outbound, &sender.address, &rpc, &packet)?;
       Ok(())
    }
 
@@ -561,7 +563,7 @@ impl Resources {
                                      payload.id_to_find.clone(),
                                      lookup_results);
       let packet = rpc.serialize();
-      self.outbound.send_to(&packet, sender.address)?;
+      udp_send_to(&self.outbound, &sender.address, &rpc, &packet)?;
       Ok(())
    }
 
@@ -575,7 +577,7 @@ impl Resources {
                                        payload.key_to_find.clone(),
                                        result);
       let packet = rpc.serialize();
-      self.outbound.send_to(&packet, sender.address)?;
+      udp_send_to(&self.outbound, &sender.address, &rpc, &packet)?;
       Ok(())
    }
 
@@ -605,3 +607,7 @@ enum WaveStrategy<T> {
    Halt(T),
 }
 
+fn udp_send_to(source: &UdpSocket, dest: &SocketAddr, rpc: &Rpc, payload: &[u8]) -> io::Result<usize> {
+   // println!("{:?} ({} bytes) from {} (reply on {}) to {}", rpc.kind, payload.len(), source.local_addr().unwrap(), rpc.sender.address, dest);
+   source.send_to(payload, dest)
+}

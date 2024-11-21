@@ -25,6 +25,7 @@ struct ExtendedEntry {
 /// Groups of extended entries classified by key.
 type KeyGroup = Vec<ExtendedEntry>;
 
+#[derive(Debug)]
 pub struct Storage {
     key_groups: RwLock<HashMap<SubotaiHash, KeyGroup>>,
     parent_id: SubotaiHash,
