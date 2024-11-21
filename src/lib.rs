@@ -23,15 +23,6 @@
 //!
 //! Subotai also supports caching to balance intense traffic around a given key.
 #![allow(dead_code, unknown_lints, wrong_self_convention)]
-#![feature(custom_derive, plugin)]
-#![plugin(serde_macros)]
-
-extern crate itertools;
-extern crate rand;
-extern crate bincode;
-extern crate bus;
-extern crate time;
-extern crate sha1;
 
 pub mod node;
 pub mod hash;

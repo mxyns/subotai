@@ -5,13 +5,15 @@
 //! This module exposes utilities to create and inspect `SubotaiHash` structures. A
 //! useful method is `sha1`, which allows you to create a sha-1 hash from some data,
 //! which can then be used as a key for a storage entry.
-use rand::{thread_rng, Rng};
+use rand::{thread_rng, RngCore};
 use itertools;
 use std::ops::BitXor;
 use std::fmt;
 use std::fmt::Write;
 use std::cmp::{PartialOrd, Ordering};
+use serde::{Deserialize, Serialize};
 use sha1;
+use sha1::Digest;
 
 pub const HASH_SIZE : usize = 160;
 pub const HASH_SIZE_BYTES : usize = HASH_SIZE / 8;
@@ -42,7 +44,7 @@ impl SubotaiHash {
       m.reset();
       m.update(data.as_bytes());
       SubotaiHash {
-         raw: m.digest().bytes(),
+         raw: m.finalize().0
       }
    }
 

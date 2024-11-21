@@ -259,7 +259,7 @@ impl SubotaiHash {
    pub fn mutate_random_bits(&mut self, number_of_bits : u8) {
       for _ in 0..number_of_bits {
          
-         let index = thread_rng().gen::<usize>() % HASH_SIZE;
+         let index = thread_rng().gen_index(0..HASH_SIZE);
          self.flip_bit(index);
       }
    }

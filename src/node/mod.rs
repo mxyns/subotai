@@ -15,19 +15,20 @@
 /// Allows listening to RPCs received by a node. Unnecessary for normal operation,
 /// but it can be useful for debugging your network.
 pub mod receptions;
-pub use routing::NodeInfo as NodeInfo;
-pub use storage::StorageEntry as StorageEntry;
-pub use node::factory::Factory as Factory;
+pub use crate::node::factory::Factory as Factory;
+pub use crate::routing::NodeInfo as NodeInfo;
+pub use crate::storage::StorageEntry as StorageEntry;
 
 #[cfg(test)]
 mod tests;
 mod resources;
 mod factory;
 
-use {storage, routing, rpc, bus, SubotaiResult, time};
-use hash::SubotaiHash;
-use std::{net, thread, sync};
-use std::time::Duration as StdDuration;
+use crate::hash::SubotaiHash;
+use crate::{routing, rpc, storage, SubotaiResult};
+use chrono::{Duration, Utc};
+use std::time::{Duration as StdDuration, Instant};
+use std::{net, sync, thread};
 
 /// Size of a typical UDP socket buffer.
 pub const SOCKET_BUFFER_SIZE_BYTES : usize = 65536;
@@ -157,7 +158,7 @@ impl Node {
 
    /// Stores an entry in the network, refreshing its expiration time back to the base value.
    pub fn store(&self, key: SubotaiHash, entry: StorageEntry) -> SubotaiResult<()> {
-      let expiration = time::now() + time::Duration::hours(self.resources.configuration.base_expiration_time_hrs);
+      let expiration = Utc::now() + Duration::hours(self.resources.configuration.base_expiration_time_hrs);
       self.resources.store(key, entry, expiration)
    }
 
@@ -192,7 +193,7 @@ impl Node {
    /// might take a bit for the node to become alive (use node::wait_until_state to 
    /// block until it's alive, if necessary).
    pub fn bootstrap(&self, seed: &net::SocketAddr) -> SubotaiResult<()> {
-      try!(self.resources.ping(seed));
+      self.resources.ping(seed)?;
       let bootstrap_resources = self.resources.clone();
       thread::spawn(move || {
          for _ in 0..BOOTSTRAP_TRIES {
@@ -232,8 +233,8 @@ impl Node {
          id                : id.clone(),
          table             : routing::Table::new(id.clone(), configuration.clone()),
          storage           : storage::Storage::new(id, configuration.clone()),
-         inbound           : try!(net::UdpSocket::bind(("0.0.0.0", inbound_port))),
-         outbound          : try!(net::UdpSocket::bind(("0.0.0.0", outbound_port))),
+         inbound           : net::UdpSocket::bind(("0.0.0.0", inbound_port))?,
+         outbound          : net::UdpSocket::bind(("0.0.0.0", outbound_port))?,
          state             : sync::RwLock::new(State::OffGrid),
          reception_updates : sync::Mutex::new(bus::Bus::new(UPDATE_BUS_SIZE_BYTES)),
          network_updates   : sync::Mutex::new(bus::Bus::new(UPDATE_BUS_SIZE_BYTES)),
@@ -244,7 +245,7 @@ impl Node {
 
       resources.table.update_node(resources.local_info());
 
-      try!(resources.inbound.set_read_timeout(Some(StdDuration::from_millis(SOCKET_TIMEOUT_MS))));
+      resources.inbound.set_read_timeout(Some(StdDuration::from_millis(SOCKET_TIMEOUT_MS)))?;
 
       let reception_resources = resources.clone();
       thread::spawn(move || { Node::reception_loop(reception_resources) });
@@ -311,8 +312,8 @@ impl Node {
    /// a `store` rpc for said entry in the past hour.
    #[allow(unused_must_use)]
    fn maintenance_loop(resources: sync::Arc<resources::Resources>) {
-      let hour = time::Duration::hours(1);
-      let mut last_republish = time::SteadyTime::now();
+      let hour = Duration::hours(1).to_std().unwrap();
+      let mut last_republish = Instant::now();
 
       loop {
          thread::sleep(StdDuration::new(MAINTENANCE_SLEEP_S,0));
@@ -320,7 +321,7 @@ impl Node {
             break;
          }
 
-         let now = time::SteadyTime::now();
+         let now = Instant::now();
          // If the oldest bucket was refreshed more than a hour ago,
          // or it was never refreshed, prune and refresh it.
          match resources.table.oldest_bucket() {
@@ -336,7 +337,7 @@ impl Node {
                resources.mass_store(keygroup.0, keygroup.1);
             }
 
-            last_republish = time::SteadyTime::now();
+            last_republish = Instant::now();
             resources.storage.mark_all_as_ready();
          }
       }

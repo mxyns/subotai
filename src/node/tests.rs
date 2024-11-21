@@ -1,9 +1,10 @@
-use {node, routing, time, hash, storage};
+use crate::{node, routing, hash, storage};
 use std::collections::VecDeque;
 use std::str::FromStr;
 use std::thread;
-use std::time::Duration as StdDuration;
+use std::time::{Duration as StdDuration, Instant};
 use std::net;
+use chrono::{Duration, Utc};
 use node::receptions;
 
 pub const POLL_FREQUENCY_MS: u64 = 50;
@@ -30,16 +31,16 @@ fn node_ping() {
 #[test]
 fn reception_iterator_times_out_correctly() {
    let alpha = node::Node::new().unwrap(); 
-   let span = time::Duration::seconds(1);
-   let maximum = time::Duration::seconds(3);
+   let span = Duration::seconds(1).to_std().unwrap();
+   let maximum = Duration::seconds(3).to_std().unwrap();
    let receptions = alpha.receptions().during(span);
 
-   let before = time::SteadyTime::now(); 
+   let before = Instant::now();
 
    // nothing is happening, so this should time out in around a second (not necessarily precise)
    assert_eq!(0, receptions.count());
 
-   let after = time::SteadyTime::now();
+   let after = Instant::now();
 
    assert!(after - before < maximum);
 }
@@ -131,7 +132,7 @@ fn generating_a_conflict_causes_a_ping_to_the_evicted_node()
    // We expect a ping to beta
    let pings = beta.receptions()
       .of_kind(receptions::KindFilter::Ping)
-      .during(time::Duration::seconds(2));
+      .during(Duration::seconds(2).to_std().unwrap());
 
    // Adding a new node causes a conflict.
    let mut id = beta.id().clone();
@@ -270,7 +271,7 @@ fn store_retrieve_in_simulated_network()
    assert_eq!(entry, retrieved_entries[0]);
 
    // Now for mass storage
-   let arbitrary_expiration = time::now() + time::Duration::minutes(30);
+   let arbitrary_expiration = Utc::now() + Duration::minutes(30);
    let collection: Vec<_> = (0..10)
       .map(|_| (storage::StorageEntry::Value(hash::SubotaiHash::random()), arbitrary_expiration)).collect();
    let collection_key = hash::SubotaiHash::random();

@@ -1,9 +1,11 @@
 use std::{net, mem, sync, iter};
-use {hash, time, node};
+use crate::{hash, node};
 use std::cmp::PartialEq;
 use hash::HASH_SIZE;
 use hash::SubotaiHash;
 use std::collections::VecDeque;
+use std::time::Instant;
+use serde::{Deserialize, Serialize};
 
 #[cfg(test)]
 mod tests;
@@ -220,21 +222,21 @@ impl Table {
       let entries = &mut bucket.write().unwrap().entries;
 
       if let Some(ref mut evictor) = entries.iter_mut().find(|info| conflict.evictor.id == info.id) {
-         mem::replace::<NodeInfo>(evictor, conflict.evicted);
+         let _ = mem::replace::<NodeInfo>(evictor, conflict.evicted);
       }
    }
 
    pub fn mark_bucket_as_probed(&self, id: &SubotaiHash) {
       let index = self.bucket_for_node(id);
       let mut bucket = self.buckets[index].write().unwrap();
-      bucket.last_probe = Some(time::SteadyTime::now());
+      bucket.last_probe = Some(Instant::now());
    }
 
    /// Returns the bucket index and the time for the bucket that we haven't
    /// probed for the longest. None on the second tuple value would mean the bucket
    /// has never been probed.
-   pub fn oldest_bucket(&self) -> (usize, Option<time::SteadyTime>) {
-      let times: Vec<Option<time::SteadyTime>> = self.buckets.iter()
+   pub fn oldest_bucket(&self) -> (usize, Option<Instant>) {
+      let times: Vec<Option<Instant>> = self.buckets.iter()
          .map(|bucket| bucket.read().unwrap().last_probe)
          .collect();
 
@@ -242,7 +244,7 @@ impl Table {
          return (index, None);
       }
 
-      let now = time::SteadyTime::now();
+      let now = Instant::now();
       times.into_iter().enumerate().max_by_key(|&(_,time)| now - time.unwrap()).unwrap()
    }
 }
@@ -281,7 +283,7 @@ pub struct EvictionConflict {
 #[derive(Debug)]
 struct Bucket {
    entries    : VecDeque<NodeInfo>,
-   last_probe : Option<time::SteadyTime>,
+   last_probe : Option<Instant>,
 }
 
 impl PartialEq for NodeInfo {

@@ -1,9 +1,11 @@
-use {hash, node, routing, storage, rpc, bus, time, SubotaiError, SubotaiResult};
 use std::{net, sync, cmp};
-use rpc::Rpc;
-use hash::SubotaiHash;
-use node::receptions;
+use crate::rpc::Rpc;
+use crate::hash::SubotaiHash;
+use crate::node::receptions;
 use std::str::FromStr;
+use std::time::Instant;
+use chrono::{DateTime, Duration, Utc};
+use crate::{node, routing, rpc, storage, SubotaiError, SubotaiResult};
 
 /// Node resources for synchronous operations.
 ///
@@ -78,12 +80,13 @@ impl Resources {
       let rpc = Rpc::ping(self.local_info());
       let packet = rpc.serialize();
       let responses = self.receptions()
-         .during(time::Duration::seconds(self.configuration.network_timeout_s))
+         .during(Duration::seconds(self.configuration.network_timeout_s).to_std().unwrap())
          .of_kind(receptions::KindFilter::PingResponse)
          .filter(|rpc| rpc.sender.address.ip() == target.ip() || 
                        target.ip() == net::IpAddr::from_str("0.0.0.0").unwrap())
          .take(1);
-      try!(self.outbound.send_to(&packet, target));
+      self.outbound.send_to(&packet, target)?;
+      println!("Outbound sent {} bytes from {} to {}", packet.len(), rpc.sender.address, target);
 
       match responses.count() {
          1 => Ok(()),
@@ -95,7 +98,7 @@ impl Resources {
    pub fn ping_and_forget(&self, target: &net::SocketAddr) -> SubotaiResult<()> {
       let rpc = Rpc::ping(self.local_info());
       let packet = rpc.serialize();
-      try!(self.outbound.send_to(&packet, target));
+      self.outbound.send_to(&packet, target)?;
       Ok(())
    }
 
@@ -187,7 +190,7 @@ impl Resources {
       };
 
       let rpc = Rpc::locate(self.local_info(), target.clone());
-      let timeout = time::Duration::seconds(3*self.configuration.network_timeout_s);
+      let timeout = Duration::seconds(3*self.configuration.network_timeout_s);
 
       self.wave(seeds, strategy, rpc, timeout)
    }
@@ -237,7 +240,7 @@ impl Resources {
       };
 
       let rpc = Rpc::probe(self.local_info(), target.clone());
-      let timeout = time::Duration::seconds(3*self.configuration.network_timeout_s);
+      let timeout = Duration::seconds(3*self.configuration.network_timeout_s);
 
       self.wave(seeds, strategy, rpc, timeout)
    }
@@ -285,7 +288,7 @@ impl Resources {
             if let Some(ref candidate) = cache_candidate {
                let expiration = self.calculate_cache_expiration(&candidate.id, key);
                for entry in &retrieved {
-                  let rpc = Rpc::store(self.local_info(), key.clone(), entry.clone(), rpc::SerializableTime::from(expiration));
+                  let rpc = Rpc::store(self.local_info(), key.clone(), entry.clone(), expiration);
                   let packet = rpc.serialize();
                   let _ = self.outbound.send_to(&packet, candidate.address);
                }
@@ -301,19 +304,19 @@ impl Resources {
       };
 
       let rpc = Rpc::retrieve(self.local_info(), key.clone());
-      let timeout = time::Duration::seconds(3*self.configuration.network_timeout_s);
+      let timeout = Duration::seconds(3*self.configuration.network_timeout_s);
 
       self.wave(seeds, strategy, rpc, timeout)
    }
   
    ///// the expiration time drops substantially the further away the parent node is from the key, past
    ///// a threshold.
-   fn calculate_cache_expiration(&self, candidate_id: &SubotaiHash, key: &SubotaiHash) -> time::Tm {
+   fn calculate_cache_expiration(&self, candidate_id: &SubotaiHash, key: &SubotaiHash) -> DateTime<Utc> {
       let distance = (candidate_id ^ key).height().unwrap_or(0);
       let adjusted_distance  = usize::saturating_sub(distance, self.configuration.expiration_distance_threshold) as u32;
       let clamped_distance = cmp::min(16, adjusted_distance);
       let expiration_factor = 2i64.pow(clamped_distance);
-      time::now() + time::Duration::minutes(self.configuration.base_cache_time_mins / expiration_factor)
+      Utc::now() + Duration::minutes(self.configuration.base_cache_time_mins / expiration_factor)
    }
 
    /// Wave operation. Contacts nodes from a list by sending a specific RPC. Then, it 
@@ -323,31 +326,31 @@ impl Resources {
    /// in the wave, outputs the next nodes to contact, and decides whether to stop 
    /// the wave by producing a Some(T) in its second return value.
    ///
-   /// The wave terminates when when the strategy function provides no new nodes, when a 
+   /// The wave terminates when the strategy function provides no new nodes, when a
    /// global timeout is reached, or when halt returns Some(T).
-   fn wave<T, S>(&self, seeds: Vec<routing::NodeInfo>, mut strategy: S, rpc: rpc::Rpc, timeout: time::Duration) -> SubotaiResult<T>
-      where S: FnMut(&[rpc::Rpc], &[routing::NodeInfo]) -> WaveStrategy<T> {
+   fn wave<T, S>(&self, seeds: Vec<routing::NodeInfo>, mut strategy: S, rpc: Rpc, timeout: Duration) -> SubotaiResult<T>
+      where S: FnMut(&[Rpc], &[routing::NodeInfo]) -> WaveStrategy<T> {
 
-      let deadline = time::SteadyTime::now() + timeout;
+      let deadline = Instant::now() + timeout.to_std().unwrap();
       let mut nodes_to_query = seeds;
       let mut queried = Vec::<routing::NodeInfo>::new();
       let packet = rpc.serialize();
 
-      // We loop as long as we haven't ran out of time and there is something to query.
-      while time::SteadyTime::now() < deadline && !nodes_to_query.is_empty() {
+      // We loop as long as we have not run out of time and there is something to query.
+      while Instant::now() < deadline && !nodes_to_query.is_empty() {
          // Here, we only know who to listen to, for how long, and the number of 
          // responses. Whether or not a response is interesting is down to the 
          // strategy function.
          let senders: Vec<SubotaiHash> = nodes_to_query.iter().map(|info| &info.id).cloned().collect();
          let responses = self.receptions()
             .from_senders(senders)
-            .during(time::Duration::seconds(self.configuration.network_timeout_s))
+            .during(Duration::seconds(self.configuration.network_timeout_s).to_std().unwrap())
             .take(cmp::min(nodes_to_query.len(), usize::saturating_sub(self.configuration.alpha, self.configuration.impatience)));
       
          // We query all the nodes with the wave RPC, and collect the responses, 
          // ignoring any slackers based on the IMPATIENCE factor.
          for node in &nodes_to_query {
-            try!(self.outbound.send_to(&packet, node.address));
+            self.outbound.send_to(&packet, node.address)?;
          }
          queried.append(&mut nodes_to_query);
          let responses: Vec<_> = responses.collect();
@@ -364,14 +367,14 @@ impl Resources {
 
    /// Probes a random node in a bucket, refreshing it.
    pub fn refresh_bucket(&self, index: usize) -> SubotaiResult<()> {
-      if index > hash::HASH_SIZE {
+      if index > crate::hash::HASH_SIZE {
          return Err(SubotaiError::OutOfBounds);
       }
       
-      try!(self.prune_bucket(index));
+      self.prune_bucket(index)?;
 
       let id = SubotaiHash::random_at_distance(&self.id, index);
-      try!(self.probe(&id, self.configuration.k_factor));
+      self.probe(&id, self.configuration.k_factor)?;
       Ok(())
    }
 
@@ -382,12 +385,12 @@ impl Resources {
       let responses = self
          .receptions()
          .of_kind(receptions::KindFilter::PingResponse)
-         .during(time::Duration::seconds(self.configuration.network_timeout_s))
+         .during(Duration::seconds(self.configuration.network_timeout_s).to_std().unwrap())
          .filter(|rpc| ids.contains(&rpc.sender.id))
          .take(ids.len());
 
       for node in self.table.nodes_from_bucket(index) {
-         try!(self.ping_and_forget(&node.address));
+         self.ping_and_forget(&node.address)?;
       }
       
       for response in responses {
@@ -402,27 +405,27 @@ impl Resources {
    }
 
    /// Stores entries associated to a key with a single RPC.
-   pub fn mass_store(&self, key: SubotaiHash, entries: Vec<(storage::StorageEntry, time::Tm)>) -> SubotaiResult<()> {
+   pub fn mass_store(&self, key: SubotaiHash, entries: Vec<(storage::StorageEntry, DateTime<Utc>)>) -> SubotaiResult<()> {
       if let node::State::OffGrid = *self.state.read().unwrap() {
          return Err(SubotaiError::OffGridError);
       }
-      let storage_candidates = try!(self.probe(&key, self.configuration.k_factor));
+      let storage_candidates = self.probe(&key, self.configuration.k_factor)?;
       let cloned_key = key.clone();
 
       // At least one third of the store RPCs must succeed.
       let responses = self
          .receptions()
          .of_kind(receptions::KindFilter::StoreResponse)
-         .during(time::Duration::seconds(self.configuration.network_timeout_s))
+         .during(Duration::seconds(self.configuration.network_timeout_s).to_std().unwrap())
          .filter(|rpc| rpc.successfully_stored(&cloned_key))
          .take(self.configuration.k_factor / 3);
       
-      let collection: Vec<_> = entries.into_iter().map(|(entry, time)| (entry, rpc::SerializableTime::from(time))).collect();
+      let collection: Vec<_> = entries.into_iter().map(|(entry, time)| (entry, time)).collect();
       let rpc = Rpc::mass_store(self.local_info(), key, collection );
       let packet = rpc.serialize();
 
       for candidate in &storage_candidates {
-         try!(self.outbound.send_to(&packet, candidate.address));
+         self.outbound.send_to(&packet, candidate.address)?;
       }
 
       if responses.count() == self.configuration.k_factor / 3 {
@@ -432,27 +435,27 @@ impl Resources {
       }
    }
 
-   pub fn store(&self, key: SubotaiHash, entry: storage::StorageEntry, expiration: time::Tm) -> SubotaiResult<()> {
+   pub fn store(&self, key: SubotaiHash, entry: storage::StorageEntry, expiration: DateTime<Utc>) -> SubotaiResult<()> {
       if let node::State::OffGrid = *self.state.read().unwrap() {
          return Err(SubotaiError::OffGridError);
       }
 
-      let storage_candidates = try!(self.probe(&key, self.configuration.k_factor));
+      let storage_candidates = self.probe(&key, self.configuration.k_factor)?;
       let cloned_key = key.clone();
 
       // At least one third of the store RPCs must succeed.
       let responses = self
          .receptions()
          .of_kind(receptions::KindFilter::StoreResponse)
-         .during(time::Duration::seconds(self.configuration.network_timeout_s))
+         .during(Duration::seconds(self.configuration.network_timeout_s).to_std().unwrap())
          .filter(|rpc| rpc.successfully_stored(&cloned_key))
          .take(self.configuration.k_factor / 3);
 
-      let rpc = Rpc::store(self.local_info(), key, entry, rpc::SerializableTime::from(expiration));
+      let rpc = Rpc::store(self.local_info(), key, entry, expiration);
       let packet = rpc.serialize();
 
       for candidate in &storage_candidates {
-         try!(self.outbound.send_to(&packet, candidate.address));
+         self.outbound.send_to(&packet, candidate.address)?;
       }
 
       if responses.count() == self.configuration.k_factor / 3 {
@@ -497,17 +500,17 @@ impl Resources {
    fn handle_ping(&self, sender: routing::NodeInfo) -> SubotaiResult<()> {
       let rpc = Rpc::ping_response(self.local_info());
       let packet = rpc.serialize();
-      try!(self.outbound.send_to(&packet, sender.address));
+      self.outbound.send_to(&packet, sender.address)?;
       Ok(())
    }
 
    fn handle_store(&self, payload: sync::Arc<rpc::StorePayload>,  sender: routing::NodeInfo) -> SubotaiResult<()> {
       let store_result = self.storage.store(&payload.key, 
                                             &payload.entry,
-                                            &time::Tm::from(payload.expiration.clone()));
+                                            &DateTime::from(payload.expiration.clone()));
       let rpc = Rpc::store_response(self.local_info(), payload.key.clone(), store_result);
       let packet = rpc.serialize();
-      try!(self.outbound.send_to(&packet, sender.address));
+      self.outbound.send_to(&packet, sender.address)?;
 
       Ok(())
    }
@@ -515,7 +518,7 @@ impl Resources {
    fn handle_mass_store(&self, payload: sync::Arc<rpc::MassStorePayload>, sender: routing::NodeInfo) -> SubotaiResult<()> {
       
       let all_stores_succeeded = payload.entries_and_expirations.iter().all(|&(ref entry, ref expiration)| {
-         self.storage.store(&payload.key, entry, &time::Tm::from(expiration.clone())) == storage::StoreResult::Success
+         self.storage.store(&payload.key, entry, expiration) == storage::StoreResult::Success
       });
 
       let store_result = if all_stores_succeeded { 
@@ -526,7 +529,7 @@ impl Resources {
 
       let rpc = Rpc::store_response(self.local_info(), payload.key.clone(), store_result);
       let packet = rpc.serialize();
-      try!(self.outbound.send_to(&packet, sender.address));
+      self.outbound.send_to(&packet, sender.address)?;
 
       Ok(())
    }
@@ -543,7 +546,7 @@ impl Resources {
                                     closest, 
                                     payload.id_to_probe.clone());
       let packet = rpc.serialize();
-      try!(self.outbound.send_to(&packet, sender.address));
+      self.outbound.send_to(&packet, sender.address)?;
       Ok(())
    }
 
@@ -558,7 +561,7 @@ impl Resources {
                                      payload.id_to_find.clone(),
                                      lookup_results);
       let packet = rpc.serialize();
-      try!(self.outbound.send_to(&packet, sender.address));
+      self.outbound.send_to(&packet, sender.address)?;
       Ok(())
    }
 
@@ -572,7 +575,7 @@ impl Resources {
                                        payload.key_to_find.clone(),
                                        result);
       let packet = rpc.serialize();
-      try!(self.outbound.send_to(&packet, sender.address));
+      self.outbound.send_to(&packet, sender.address)?;
       Ok(())
    }
 
@@ -590,7 +593,7 @@ impl Resources {
       if let rpc::RetrieveResult::Found(ref entries) = payload.result {
          // Retrieved keys are cached locally for a limited time, to guarantee succesive retrieves don't flood the network.
          for entry in entries {
-            self.storage.store(&payload.key_to_find, entry, &(time::now() + time::Duration::minutes(1)));
+            self.storage.store(&payload.key_to_find, entry, &(Utc::now() + Duration::minutes(1)));
          }
       }
       Ok(())
