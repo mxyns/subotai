@@ -262,7 +262,7 @@ impl Resources {
       let seeds: Vec<_> = closest.iter().cloned().take(self.configuration.alpha).collect();
       let mut cache_candidate: Option<routing::NodeInfo> = None;
 
-      let strategy = |responses: &[rpc::Rpc], queried: &[routing::NodeInfo]| -> WaveStrategy<Vec<storage::StorageEntry>> {
+      let strategy = |responses: &[Rpc], queried: &[routing::NodeInfo]| -> WaveStrategy<Vec<storage::StorageEntry>> {
          // If any parallel process, or the response from a slow node has retrieved the key,
          // we need to break out early
          if let Some(retrieved) = self.storage.retrieve(key) {

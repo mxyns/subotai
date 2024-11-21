@@ -1,4 +1,4 @@
-use crate::{node, routing, hash, storage};
+use crate::{node, routing, hash, storage, SubotaiResult};
 use std::collections::VecDeque;
 use std::str::FromStr;
 use std::thread;
@@ -6,6 +6,8 @@ use std::time::{Duration as StdDuration, Instant};
 use std::net;
 use chrono::{Duration, Utc};
 use node::receptions;
+use crate::hash::SubotaiHash;
+use crate::node::StorageEntry;
 
 pub const POLL_FREQUENCY_MS: u64 = 50;
 pub const TRIES: u8 = 5;
@@ -26,6 +28,20 @@ fn node_ping() {
 
    // Alpha pings beta.
    assert!(alpha.resources.ping(&beta.local_info().address).is_ok());
+}
+
+#[test]
+fn test_one_to_n_storage() {
+
+   let mut net = simulated_network(30);
+   let origin = net.pop_front().unwrap();
+
+   let key = SubotaiHash::random();
+   origin.store(key.clone(), StorageEntry::Blob(vec![0, 1, 2, 3])).expect("could not store value 0");
+   origin.store(key.clone(), StorageEntry::Blob(vec![3, 2, 1, 0])).expect("could not store value 1");
+   origin.store(key.clone(), StorageEntry::Blob(vec![0, 2, 1, 3])).expect("could not store value 2");
+
+   assert_eq!(origin.retrieve(&key).unwrap().len(), 3);
 }
 
 #[test]
