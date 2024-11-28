@@ -25,6 +25,7 @@ mod resources;
 mod tests;
 
 use crate::hash::SubotaiHash;
+use crate::storage::Storable;
 use crate::{routing, rpc, storage, SubotaiResult};
 use chrono::{Duration, Utc};
 use std::time::{Duration as StdDuration, Instant};
@@ -42,8 +43,11 @@ const MAINTENANCE_SLEEP_S: u64 = 5;
 const BOOTSTRAP_TRIES: u32 = 3;
 
 /// Subotai node.
-pub struct Node {
-    resources: sync::Arc<resources::Resources>,
+pub struct Node<V>
+where
+    V: Storable,
+{
+    resources: sync::Arc<resources::Resources<V>>,
 }
 
 /// State of a Subotai node.
@@ -148,23 +152,26 @@ impl Default for Configuration {
     }
 }
 
-impl Node {
+impl<V> Node<V>
+where
+    V: Storable + 'static,
+{
     /// Constructs a node with OS allocated random ports and default network constants.
     ///
     /// If you need more control over ports and network configuration, use `node::Factory`.
-    pub fn new() -> SubotaiResult<Node> {
+    pub fn new() -> SubotaiResult<Node<V>> {
         Node::with_configuration(0, 0, Default::default())
     }
 
     /// Stores an entry in the network, refreshing its expiration time back to the base value.
-    pub fn store(&self, key: SubotaiHash, entry: StorageEntry) -> SubotaiResult<()> {
+    pub fn store(&self, key: SubotaiHash, entry: V) -> SubotaiResult<()> {
         let expiration =
             Utc::now() + Duration::hours(self.resources.configuration.base_expiration_time_hrs);
         self.resources.store(key, entry, expiration)
     }
 
     /// Retrieves all values associated to a key from the network.
-    pub fn retrieve(&self, key: &SubotaiHash) -> SubotaiResult<Vec<StorageEntry>> {
+    pub fn retrieve(&self, key: &SubotaiHash) -> SubotaiResult<Vec<V>> {
         self.resources.retrieve(key)
     }
 
@@ -185,7 +192,7 @@ impl Node {
 
     /// Produces an iterator over RPCs received by this node. The iterator will block
     /// indefinitely.
-    pub fn receptions(&self) -> receptions::Receptions {
+    pub fn receptions(&self) -> receptions::Receptions<V> {
         self.resources.receptions()
     }
 
@@ -243,7 +250,7 @@ impl Node {
         inbound_port: u16,
         outbound_port: u16,
         configuration: Configuration,
-    ) -> SubotaiResult<Node> {
+    ) -> SubotaiResult<Node<V>> {
         let id = SubotaiHash::random();
 
         let resources = sync::Arc::new(resources::Resources {
@@ -282,7 +289,7 @@ impl Node {
     }
 
     /// Receives and processes data as long as the node is alive.
-    fn reception_loop(resources: sync::Arc<resources::Resources>) {
+    fn reception_loop(resources: sync::Arc<resources::Resources<V>>) {
         let mut buffer = [0u8; SOCKET_BUFFER_SIZE_BYTES];
 
         loop {
@@ -312,7 +319,7 @@ impl Node {
     /// Wakes up when a new node is introduced to the network, and sends mass store RPCs
     /// with those entries which are closer to it than they are to this node.
     #[allow(unused_must_use)]
-    fn republish_loop(resources: sync::Arc<resources::Resources>) {
+    fn republish_loop(resources: sync::Arc<resources::Resources<V>>) {
         let updates = {
             resources
                 .network_updates
@@ -344,7 +351,7 @@ impl Node {
     /// This loop also republishes all entries each hour, provided we haven't received
     /// a `store` rpc for said entry in the past hour.
     #[allow(unused_must_use)]
-    fn maintenance_loop(resources: sync::Arc<resources::Resources>) {
+    fn maintenance_loop(resources: sync::Arc<resources::Resources<V>>) {
         // FIXME do not ping ourselves
 
         let hour = Duration::hours(1).to_std().unwrap();
@@ -385,7 +392,7 @@ impl Node {
     /// Initiates pings to stale nodes that have been part of an eviction
     /// conflict, and disposes of conflicts that haven't been resolved.
     #[allow(unused_must_use)]
-    fn conflict_resolution_loop(resources: sync::Arc<resources::Resources>) {
+    fn conflict_resolution_loop(resources: sync::Arc<resources::Resources<V>>) {
         loop {
             let conflicts_empty = {
                 // Lock scope
@@ -422,7 +429,10 @@ impl Node {
     }
 }
 
-impl Drop for Node {
+impl<V> Drop for Node<V>
+where
+    V: Storable,
+{
     fn drop(&mut self) {
         self.resources.set_state(State::ShuttingDown);
     }

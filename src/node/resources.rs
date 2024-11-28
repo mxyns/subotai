@@ -1,6 +1,7 @@
 use crate::hash::SubotaiHash;
 use crate::node::receptions;
 use crate::rpc::Rpc;
+use crate::storage::Storable;
 use crate::{node, routing, rpc, storage, SubotaiError, SubotaiResult};
 use chrono::{DateTime, Duration, Utc};
 use std::net::{SocketAddr, UdpSocket};
@@ -17,13 +18,16 @@ use std::{cmp, io, net, sync};
 /// The node layer above is in charge of parallelizing those operations
 /// by spawning threads when adequate.
 #[derive(Debug)]
-pub struct Resources {
+pub struct Resources<V>
+where
+    V: Storable,
+{
     pub id: SubotaiHash,
     pub table: routing::Table,
-    pub storage: storage::Storage,
-    pub outbound: net::UdpSocket,
-    pub inbound: net::UdpSocket,
-    pub reception_updates: sync::Mutex<bus::Bus<ReceptionUpdate>>,
+    pub storage: storage::Storage<V>,
+    pub outbound: UdpSocket,
+    pub inbound: UdpSocket,
+    pub reception_updates: sync::Mutex<bus::Bus<ReceptionUpdate<V>>>,
     pub network_updates: sync::Mutex<bus::Bus<NetworkUpdate>>,
     pub state_updates: sync::Mutex<bus::Bus<StateUpdate>>,
     pub conflicts: sync::Mutex<Vec<routing::EvictionConflict>>,
@@ -35,9 +39,9 @@ pub struct Resources {
 /// but keeps a constant tick to allow for timeouts and notifies of state changes
 /// to fully abort the reception iterators if necessary.
 #[derive(Clone, Debug)]
-pub enum ReceptionUpdate {
+pub enum ReceptionUpdate<V> {
     Tick,
-    RpcReceived(Rpc),
+    RpcReceived(Rpc<V>),
     StateChange(node::State),
 }
 
@@ -54,7 +58,10 @@ pub enum StateUpdate {
     StateChange(node::State),
 }
 
-impl Resources {
+impl<V> Resources<V>
+where
+    V: Storable,
+{
     pub fn local_info(&self) -> routing::NodeInfo {
         routing::NodeInfo {
             id: self.id.clone(),
@@ -89,7 +96,7 @@ impl Resources {
 
     /// Pings a node via its IP address, blocking until ping response.
     pub fn ping(&self, target: &SocketAddr) -> SubotaiResult<()> {
-        let rpc = Rpc::ping(self.local_info());
+        let rpc: Rpc<V> = Rpc::ping(self.local_info());
         let packet = rpc.serialize();
         let responses = self
             .receptions()
@@ -115,7 +122,7 @@ impl Resources {
 
     /// Sends a ping and doesn't wait for a response. Used by the maintenance threads.
     pub fn ping_and_forget(&self, target: &net::SocketAddr) -> SubotaiResult<()> {
-        let rpc = Rpc::ping(self.local_info());
+        let rpc: Rpc<V> = Rpc::ping(self.local_info());
         let packet = rpc.serialize();
         udp_send_to(&self.outbound, target, &rpc, &packet)?;
         Ok(())
@@ -187,7 +194,7 @@ impl Resources {
         // We use a wave operation to locate the node. We want to stop the wave if we
         // found the node, and to always contact the closest ALPHA nodes we have knowledge
         // of. We define a strategy method for such a wave.
-        let strategy = |responses: &[rpc::Rpc],
+        let strategy = |responses: &[Rpc<V>],
                         queried: &[routing::NodeInfo]|
          -> WaveStrategy<routing::NodeInfo> {
             // If we found it, we're done.
@@ -261,7 +268,7 @@ impl Resources {
             .collect();
         // Strategy is similar to the `locate` wave. We keep probing the closest `ALPHA` nodes
         // we are aware of as we continue probing. We only halt when we have queried `K_FACTOR`.
-        let strategy = |responses: &[rpc::Rpc],
+        let strategy = |responses: &[Rpc<V>],
                         queried: &[routing::NodeInfo]|
          -> WaveStrategy<Vec<routing::NodeInfo>> {
             let mut former_closest = Vec::<routing::NodeInfo>::new();
@@ -303,7 +310,7 @@ impl Resources {
         self.wave(seeds, strategy, rpc, timeout)
     }
 
-    pub fn retrieve(&self, key: &SubotaiHash) -> SubotaiResult<Vec<storage::StorageEntry>> {
+    pub fn retrieve(&self, key: &SubotaiHash) -> SubotaiResult<Vec<V>> {
         // If the value is already present in our table, we are done early.
         if let Some(entries) = self.storage.retrieve(key) {
             return Ok(entries);
@@ -323,9 +330,9 @@ impl Resources {
             .collect();
         let mut cache_candidate: Option<routing::NodeInfo> = None;
 
-        let strategy = |responses: &[Rpc],
+        let strategy = |responses: &[Rpc<V>],
                         queried: &[routing::NodeInfo]|
-         -> WaveStrategy<Vec<storage::StorageEntry>> {
+         -> WaveStrategy<Vec<V>> {
             // If any parallel process, or the response from a slow node has retrieved the key,
             // we need to break out early
             if let Some(retrieved) = self.storage.retrieve(key) {
@@ -411,11 +418,11 @@ impl Resources {
         &self,
         seeds: Vec<routing::NodeInfo>,
         mut strategy: S,
-        rpc: Rpc,
+        rpc: Rpc<V>,
         timeout: Duration,
     ) -> SubotaiResult<T>
     where
-        S: FnMut(&[Rpc], &[routing::NodeInfo]) -> WaveStrategy<T>,
+        S: FnMut(&[Rpc<V>], &[routing::NodeInfo]) -> WaveStrategy<T>,
     {
         let deadline = Instant::now() + timeout.to_std().unwrap();
         let mut nodes_to_query = seeds;
@@ -488,7 +495,7 @@ impl Resources {
                     .to_std()
                     .unwrap(),
             )
-            .filter(|rpc| ids.contains(&rpc.sender.id))
+            .filter(|rpc: &Rpc<V>| ids.contains(&rpc.sender.id))
             .take(ids.len());
 
         for node in self.table.nodes_from_bucket(index) {
@@ -510,7 +517,7 @@ impl Resources {
     pub fn mass_store(
         &self,
         key: SubotaiHash,
-        entries: Vec<(storage::StorageEntry, DateTime<Utc>)>,
+        entries: Vec<(V, DateTime<Utc>)>,
     ) -> SubotaiResult<()> {
         if let node::State::OffGrid = *self.state.read().unwrap() {
             return Err(SubotaiError::OffGridError);
@@ -527,7 +534,7 @@ impl Resources {
                     .to_std()
                     .unwrap(),
             )
-            .filter(|rpc| rpc.successfully_stored(&cloned_key))
+            .filter(|rpc: &Rpc<V>| rpc.successfully_stored(&cloned_key))
             .take(self.configuration.k_factor / 3);
 
         let collection: Vec<_> = entries.into_iter().collect();
@@ -548,7 +555,7 @@ impl Resources {
     pub fn store(
         &self,
         key: SubotaiHash,
-        entry: storage::StorageEntry,
+        entry: V,
         expiration: DateTime<Utc>,
     ) -> SubotaiResult<()> {
         if let node::State::OffGrid = *self.state.read().unwrap() {
@@ -567,7 +574,7 @@ impl Resources {
                     .to_std()
                     .unwrap(),
             )
-            .filter(|rpc| rpc.successfully_stored(&cloned_key))
+            .filter(|rpc: &Rpc<V>| rpc.successfully_stored(&cloned_key))
             .take(self.configuration.k_factor / 3);
 
         let rpc = Rpc::store(self.local_info(), key, entry, expiration);
@@ -598,7 +605,7 @@ impl Resources {
         }
     }
 
-    pub fn process_incoming_rpc(&self, mut rpc: Rpc, source: net::SocketAddr) -> SubotaiResult<()> {
+    pub fn process_incoming_rpc(&self, mut rpc: Rpc<V>, source: SocketAddr) -> SubotaiResult<()> {
         rpc.sender.address.set_ip(source.ip());
         let sender = rpc.sender.clone();
 
@@ -625,7 +632,7 @@ impl Resources {
     }
 
     fn handle_ping(&self, sender: routing::NodeInfo) -> SubotaiResult<()> {
-        let rpc = Rpc::ping_response(self.local_info());
+        let rpc: Rpc<V> = Rpc::ping_response(self.local_info());
         let packet = rpc.serialize();
         udp_send_to(&self.outbound, &sender.address, &rpc, &packet)?;
         Ok(())
@@ -633,13 +640,13 @@ impl Resources {
 
     fn handle_store(
         &self,
-        payload: sync::Arc<rpc::StorePayload>,
+        payload: sync::Arc<rpc::StorePayload<V>>,
         sender: routing::NodeInfo,
     ) -> SubotaiResult<()> {
-        let store_result = self
-            .storage
-            .store(&payload.key, &payload.entry, &payload.expiration);
-        let rpc = Rpc::store_response(self.local_info(), payload.key.clone(), store_result);
+        let store_result =
+            self.storage
+                .store(&payload.key, payload.entry.clone(), &payload.expiration);
+        let rpc: Rpc<V> = Rpc::store_response(self.local_info(), payload.key.clone(), store_result);
         let packet = rpc.serialize();
         udp_send_to(&self.outbound, &sender.address, &rpc, &packet)?;
 
@@ -648,7 +655,7 @@ impl Resources {
 
     fn handle_mass_store(
         &self,
-        payload: sync::Arc<rpc::MassStorePayload>,
+        payload: sync::Arc<rpc::MassStorePayload<V>>,
         sender: routing::NodeInfo,
     ) -> SubotaiResult<()> {
         let all_stores_succeeded =
@@ -656,7 +663,7 @@ impl Resources {
                 .entries_and_expirations
                 .iter()
                 .all(|(entry, expiration)| {
-                    self.storage.store(&payload.key, entry, expiration)
+                    self.storage.store(&payload.key, entry.clone(), expiration)
                         == storage::StoreResult::Success
                 });
 
@@ -666,7 +673,7 @@ impl Resources {
             storage::StoreResult::MassStoreFailed
         };
 
-        let rpc = Rpc::store_response(self.local_info(), payload.key.clone(), store_result);
+        let rpc: Rpc<V> = Rpc::store_response(self.local_info(), payload.key.clone(), store_result);
         let packet = rpc.serialize();
         udp_send_to(&self.outbound, &sender.address, &rpc, &packet)?;
 
@@ -686,7 +693,8 @@ impl Resources {
             .take(self.configuration.k_factor + 1)
             .collect();
 
-        let rpc = Rpc::probe_response(self.local_info(), closest, payload.id_to_probe.clone());
+        let rpc: Rpc<V> =
+            Rpc::probe_response(self.local_info(), closest, payload.id_to_probe.clone());
         let packet = rpc.serialize();
         udp_send_to(&self.outbound, &sender.address, &rpc, &packet)?;
         Ok(())
@@ -705,7 +713,7 @@ impl Resources {
         let lookup_results =
             self.table
                 .lookup(&payload.id_to_find, self.configuration.k_factor, None);
-        let rpc = Rpc::locate_response(
+        let rpc: Rpc<V> = Rpc::locate_response(
             self.local_info(),
             payload.id_to_find.clone(),
             lookup_results,
@@ -751,14 +759,14 @@ impl Resources {
 
     fn handle_retrieve_response(
         &self,
-        payload: sync::Arc<rpc::RetrieveResponsePayload>,
+        payload: sync::Arc<rpc::RetrieveResponsePayload<V>>,
     ) -> SubotaiResult<()> {
-        if let rpc::RetrieveResult::Found(ref entries) = payload.result {
+        if let rpc::RetrieveResult::Found(entries) = &payload.result {
             // Retrieved keys are cached locally for a limited time, to guarantee succesive retrieves don't flood the network.
             for entry in entries {
                 self.storage.store(
                     &payload.key_to_find,
-                    entry,
+                    entry.clone(),
                     &(Utc::now() + Duration::minutes(1)),
                 );
             }
@@ -772,10 +780,10 @@ enum WaveStrategy<T> {
     Halt(T),
 }
 
-fn udp_send_to(
+fn udp_send_to<T>(
     source: &UdpSocket,
     dest: &SocketAddr,
-    _rpc: &Rpc,
+    _rpc: &Rpc<T>,
     payload: &[u8],
 ) -> io::Result<usize> {
     // println!("{:?} ({} bytes) from {} (reply on {}) to {}", rpc.kind, payload.len(), source.local_addr().unwrap(), rpc.sender.address, dest);

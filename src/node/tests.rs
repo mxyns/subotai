@@ -14,8 +14,8 @@ pub const TRIES: u8 = 5;
 
 #[test]
 fn node_ping() {
-    let alpha = node::Node::new().unwrap();
-    let beta = node::Node::new().unwrap();
+    let alpha = node::Node::<StorageEntry>::new().unwrap();
+    let beta = node::Node::<StorageEntry>::new().unwrap();
     let beta_seed = beta.resources.local_info().address;
 
     // Bootstrapping alpha:
@@ -51,7 +51,7 @@ fn test_one_to_n_storage() {
 
 #[test]
 fn reception_iterator_times_out_correctly() {
-    let alpha = node::Node::new().unwrap();
+    let alpha = node::Node::<StorageEntry>::new().unwrap();
     let span = Duration::seconds(1).to_std().unwrap();
     let maximum = Duration::seconds(3).to_std().unwrap();
     let receptions = alpha.receptions().during(span);
@@ -107,14 +107,14 @@ fn finding_a_nonexisting_node_in_a_simulated_network_times_out() {
     assert!(head.resources.locate(&random_hash).is_err());
 }
 
-fn simulated_network(network_size: usize) -> VecDeque<node::Node> {
+fn simulated_network(network_size: usize) -> VecDeque<node::Node<StorageEntry>> {
     let cfg: node::Configuration = Default::default();
     assert!(
         network_size > cfg.k_factor,
         "You can't build a network with so few nodes!"
     );
 
-    let nodes: VecDeque<node::Node> = (0..network_size)
+    let nodes: VecDeque<node::Node<StorageEntry>> = (0..network_size)
         .map(|_| node::Node::new().unwrap())
         .collect();
     {
@@ -132,7 +132,7 @@ fn simulated_network(network_size: usize) -> VecDeque<node::Node> {
 
 #[test]
 fn updating_table_with_full_bucket_starts_the_conflict_resolution_mechanism() {
-    let node = node::Node::new().unwrap();
+    let node = node::Node::<StorageEntry>::new().unwrap();
     let cfg = &node.resources.configuration;
 
     node.resources.table.fill_bucket(8, cfg.k_factor as u8); // Bucket completely full
@@ -148,8 +148,8 @@ fn updating_table_with_full_bucket_starts_the_conflict_resolution_mechanism() {
 
 #[test]
 fn generating_a_conflict_causes_a_ping_to_the_evicted_node() {
-    let alpha = node::Node::new().unwrap();
-    let beta = node::Node::new().unwrap();
+    let alpha = node::Node::<StorageEntry>::new().unwrap();
+    let beta = node::Node::<StorageEntry>::new().unwrap();
     let cfg = &alpha.resources.configuration;
     alpha.resources.update_table(beta.resources.local_info());
 
@@ -178,7 +178,7 @@ fn generating_a_conflict_causes_a_ping_to_the_evicted_node() {
 
 #[test]
 fn generating_too_many_conflicts_causes_the_node_to_enter_defensive_state() {
-    let node = node::Node::new().unwrap();
+    let node = node::Node::<StorageEntry>::new().unwrap();
     let cfg = &node.resources.configuration;
 
     for index in 0..(cfg.k_factor + cfg.max_conflicts) {

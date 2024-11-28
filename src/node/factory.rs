@@ -3,6 +3,7 @@
 //! The factory module allows you to create Subotai nodes with specific configuration options,
 //! such as network constants and different UDP ports.
 use crate::node::Node;
+use crate::storage::Storable;
 use crate::SubotaiResult;
 use std::cmp;
 
@@ -31,7 +32,10 @@ impl Factory {
 
     /// Creates a node with the configuration values specified in the factory. Defaults to the
     /// same values as calling Node::new().
-    pub fn create_node(&self) -> SubotaiResult<Node> {
+    pub fn create_node<T>(&self) -> SubotaiResult<Node<T>>
+    where
+        T: Storable + 'static,
+    {
         Node::with_configuration(
             self.inbound_port,
             self.outbound_port,

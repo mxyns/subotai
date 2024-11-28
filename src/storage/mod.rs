@@ -14,20 +14,36 @@ pub enum StorageEntry {
     Blob(Vec<u8>),
 }
 
+pub trait Storable: PartialEq + Send + Clone + Sync + Serialize + for<'a> Deserialize<'a> {
+    fn len(&self) -> usize;
+}
+
+impl Storable for StorageEntry {
+    fn len(&self) -> usize {
+        match self {
+            StorageEntry::Value(hash) => size_of_val(&hash.raw),
+            StorageEntry::Blob(blob) => blob.len(),
+        }
+    }
+}
+
 /// Storage entry wrapper that includes management information.
 #[derive(Debug, Clone)]
-struct ExtendedEntry {
-    entry: StorageEntry,
+struct ExtendedEntry<V> {
+    entry: V,
     expiration: DateTime<Utc>,
     republish_ready: bool,
 }
 
 /// Groups of extended entries classified by key.
-type KeyGroup = Vec<ExtendedEntry>;
+type KeyGroup<V> = Vec<ExtendedEntry<V>>;
 
 #[derive(Debug)]
-pub struct Storage {
-    key_groups: RwLock<HashMap<SubotaiHash, KeyGroup>>,
+pub struct Storage<V>
+where
+    V: Storable,
+{
+    key_groups: RwLock<HashMap<SubotaiHash, KeyGroup<V>>>,
     parent_id: SubotaiHash,
     configuration: node::Configuration,
 }
@@ -40,8 +56,11 @@ pub enum StoreResult {
     MassStoreFailed,
 }
 
-impl Storage {
-    pub fn new(parent_id: SubotaiHash, configuration: node::Configuration) -> Storage {
+impl<V> Storage<V>
+where
+    V: Storable,
+{
+    pub fn new(parent_id: SubotaiHash, configuration: node::Configuration) -> Storage<V> {
         Storage {
             key_groups: RwLock::new(HashMap::with_capacity(configuration.max_storage)),
             parent_id,
@@ -64,7 +83,7 @@ impl Storage {
     }
 
     /// Retrieves all entries in a key_group.
-    pub fn retrieve(&self, key: &SubotaiHash) -> Option<Vec<StorageEntry>> {
+    pub fn retrieve(&self, key: &SubotaiHash) -> Option<Vec<V>> {
         self.clear_expired_entries();
         self.key_groups.read().unwrap().get(key).map(|key_group| {
             key_group
@@ -77,13 +96,8 @@ impl Storage {
 
     /// Stores an entry in a key_group, with an expiration date, if it wasn't present already.
     /// If it was present, it keeps the latest expiration time and marks as not ready for republishing.
-    pub fn store(
-        &self,
-        key: &SubotaiHash,
-        entry: &StorageEntry,
-        expiration: &DateTime<Utc>,
-    ) -> StoreResult {
-        if self.is_big_blob(entry) {
+    pub fn store(&self, key: &SubotaiHash, entry: V, expiration: &DateTime<Utc>) -> StoreResult {
+        if self.is_big_blob(&entry) {
             return StoreResult::BlobTooBig;
         }
 
@@ -99,7 +113,7 @@ impl Storage {
             let key_group = key_groups.get_mut(key).unwrap();
             let already_existed = if let Some(preexisting_pair) = key_group
                 .iter_mut()
-                .find(|stored_pair| stored_pair.entry == *entry)
+                .find(|stored_pair| stored_pair.entry == entry)
             {
                 preexisting_pair.expiration = cmp::max(preexisting_pair.expiration, expiration); // Take the latest expiration time.
                 preexisting_pair.republish_ready = false;
@@ -112,7 +126,7 @@ impl Storage {
                     return StoreResult::StorageFull;
                 }
                 let new_entry = ExtendedEntry {
-                    entry: entry.clone(),
+                    entry,
                     expiration,
                     republish_ready: false,
                 };
@@ -124,7 +138,7 @@ impl Storage {
             }
             let mut key_group = KeyGroup::new();
             let new_entry = ExtendedEntry {
-                entry: entry.clone(),
+                entry,
                 expiration,
                 republish_ready: false,
             };
@@ -134,11 +148,8 @@ impl Storage {
         StoreResult::Success
     }
 
-    fn is_big_blob(&self, entry: &StorageEntry) -> bool {
-        match *entry {
-            StorageEntry::Blob(ref vec) => vec.len() > self.configuration.max_storage_blob_size,
-            _ => false,
-        }
+    fn is_big_blob(&self, entry: &V) -> bool {
+        entry.len() > self.configuration.max_storage_blob_size
     }
 
     fn clear_expired_entries(&self) {
@@ -178,7 +189,7 @@ impl Storage {
     pub fn get_entries_closer_to(
         &self,
         target: &SubotaiHash,
-    ) -> Vec<(SubotaiHash, Vec<(StorageEntry, DateTime<Utc>)>)> {
+    ) -> Vec<(SubotaiHash, Vec<(V, DateTime<Utc>)>)> {
         self.key_groups
             .read()
             .unwrap()
@@ -198,13 +209,13 @@ impl Storage {
     }
 
     /// Retrieves all keys and associated data ready for republishing
-    pub fn get_all_ready_entries(&self) -> Vec<(SubotaiHash, Vec<(StorageEntry, DateTime<Utc>)>)> {
+    pub fn get_all_ready_entries(&self) -> Vec<(SubotaiHash, Vec<(V, DateTime<Utc>)>)> {
         self.clear_expired_entries();
 
         let key_groups = self.key_groups.read().unwrap();
-        let mut all_ready_entries = Vec::<(SubotaiHash, Vec<(StorageEntry, DateTime<Utc>)>)>::new();
+        let mut all_ready_entries = Vec::<(SubotaiHash, Vec<(V, DateTime<Utc>)>)>::new();
         for (key, group) in key_groups.iter() {
-            let ready_entries_in_group: Vec<(StorageEntry, DateTime<Utc>)> = group
+            let ready_entries_in_group: Vec<(V, DateTime<Utc>)> = group
                 .iter()
                 .filter_map(|ext| {
                     if ext.republish_ready {
@@ -235,11 +246,11 @@ mod tests {
         let entry = StorageEntry::Value(SubotaiHash::random());
         let another_entry = StorageEntry::Blob(Vec::<u8>::new());
         let expiration = Utc::now() + Duration::minutes(30);
-        match storage.store(&key, &entry, &expiration) {
+        match storage.store(&key, entry.clone(), &expiration) {
             StoreResult::Success => (),
             _ => panic!(),
         }
-        match storage.store(&key, &another_entry, &expiration) {
+        match storage.store(&key, another_entry.clone(), &expiration) {
             StoreResult::Success => (),
             _ => panic!(),
         }
@@ -259,17 +270,17 @@ mod tests {
 
         storage.store(
             &key_alpha,
-            &StorageEntry::Value(SubotaiHash::random()),
+            StorageEntry::Value(SubotaiHash::random()),
             &expiration,
         );
         storage.store(
             &key_alpha,
-            &StorageEntry::Value(SubotaiHash::random()),
+            StorageEntry::Value(SubotaiHash::random()),
             &expiration,
         );
         storage.store(
             &key_beta,
-            &StorageEntry::Value(SubotaiHash::random()),
+            StorageEntry::Value(SubotaiHash::random()),
             &expiration,
         );
 
@@ -295,12 +306,12 @@ mod tests {
         let expiration = Utc::now() + Duration::minutes(30);
         storage.store(
             &key,
-            &StorageEntry::Value(SubotaiHash::random()),
+            StorageEntry::Value(SubotaiHash::random()),
             &expiration,
         );
         storage.store(
             &close_key,
-            &StorageEntry::Value(SubotaiHash::random()),
+            StorageEntry::Value(SubotaiHash::random()),
             &expiration,
         );
 
@@ -320,8 +331,8 @@ mod tests {
         let expiration_soon = now + Duration::minutes(30);
         let expiration_later = now + Duration::hours(10);
 
-        storage.store(&key, &entry, &expiration_soon);
-        storage.store(&key, &entry, &expiration_later);
+        storage.store(&key, entry.clone(), &expiration_soon);
+        storage.store(&key, entry, &expiration_later);
 
         // Little trick to get the expiration date through the API
         storage.mark_all_as_ready();
@@ -341,8 +352,8 @@ mod tests {
         let expiration_later = now + Duration::hours(10);
 
         // Different order!
-        storage.store(&key, &entry, &expiration_later);
-        storage.store(&key, &entry, &expiration_soon);
+        storage.store(&key, entry.clone(), &expiration_later);
+        storage.store(&key, entry, &expiration_soon);
 
         // Little trick to get the expiration date through the API
         storage.mark_all_as_ready();
@@ -363,15 +374,15 @@ mod tests {
         let entry_beta = StorageEntry::Value(SubotaiHash::random());
         let expiration_beta = now - Duration::minutes(30); // Expired!
 
-        storage.store(&key_alpha, &entry_alpha, &expiration_alpha);
-        storage.store(&key_beta, &entry_beta, &expiration_beta);
+        storage.store(&key_alpha, entry_alpha, &expiration_alpha);
+        storage.store(&key_beta, entry_beta, &expiration_beta);
         assert_eq!(storage.len(), 2);
         assert!(storage.retrieve(&key_beta).is_none());
         assert!(storage.retrieve(&key_alpha).is_some());
         assert_eq!(storage.len(), 1);
     }
 
-    fn default_storage() -> Storage {
+    fn default_storage<T: Storable>() -> Storage<T> {
         let default_config: node::Configuration = Default::default();
         Storage::new(SubotaiHash::random(), default_config)
     }

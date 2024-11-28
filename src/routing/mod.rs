@@ -316,7 +316,7 @@ impl PartialEq for NodeInfo {
 }
 
 #[allow(clippy::while_let_on_iterator)]
-impl<'a, 'b> Iterator for ClosestNodesTo<'a, 'b> {
+impl Iterator for ClosestNodesTo<'_, '_> {
     type Item = NodeInfo;
 
     fn next(&mut self) -> Option<NodeInfo> {
@@ -346,7 +346,7 @@ impl<'a, 'b> Iterator for ClosestNodesTo<'a, 'b> {
     }
 }
 
-impl<'a> Iterator for AllNodes<'a> {
+impl Iterator for AllNodes<'_> {
     type Item = NodeInfo;
 
     fn next(&mut self) -> Option<NodeInfo> {

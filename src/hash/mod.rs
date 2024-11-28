@@ -181,7 +181,7 @@ pub struct IntoOnes {
     rev: usize,
 }
 
-impl<'a> Iterator for Zeroes<'a> {
+impl Iterator for Zeroes<'_> {
     type Item = usize;
 
     fn next(&mut self) -> Option<usize> {
@@ -196,7 +196,7 @@ impl<'a> Iterator for Zeroes<'a> {
     }
 }
 
-impl<'a> Iterator for Ones<'a> {
+impl Iterator for Ones<'_> {
     type Item = usize;
 
     fn next(&mut self) -> Option<usize> {
@@ -211,7 +211,7 @@ impl<'a> Iterator for Ones<'a> {
     }
 }
 
-impl<'a> DoubleEndedIterator for Zeroes<'a> {
+impl DoubleEndedIterator for Zeroes<'_> {
     fn next_back(&mut self) -> Option<usize> {
         while self.index < self.rev {
             let value_at_rev = self.hash.raw[(self.rev - 1) / 8] & (1 << ((self.rev - 1) % 8));
@@ -224,7 +224,7 @@ impl<'a> DoubleEndedIterator for Zeroes<'a> {
     }
 }
 
-impl<'a> DoubleEndedIterator for Ones<'a> {
+impl DoubleEndedIterator for Ones<'_> {
     fn next_back(&mut self) -> Option<usize> {
         while self.index < self.rev {
             let value_at_rev = self.hash.raw[(self.rev - 1) / 8] & (1 << ((self.rev - 1) % 8));
@@ -313,7 +313,7 @@ impl Ord for SubotaiHash {
     }
 }
 
-impl<'a, 'b> BitXor<&'b SubotaiHash> for &'a SubotaiHash {
+impl<'b> BitXor<&'b SubotaiHash> for &SubotaiHash {
     type Output = SubotaiHash;
 
     fn bitxor(self, rhs: &'b SubotaiHash) -> SubotaiHash {

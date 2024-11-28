@@ -4,6 +4,7 @@
 //! contain information about the sender, as well as an optional payload.
 
 use crate::hash::SubotaiHash;
+use crate::storage::Storable;
 use crate::{node, routing, storage};
 use bincode::Options;
 use chrono::{DateTime, Utc};
@@ -12,18 +13,21 @@ use std::sync::Arc;
 
 /// Serializable struct implementation of an RPC.
 #[derive(Serialize, Deserialize, Eq, PartialEq, Debug, Clone)]
-pub struct Rpc {
+pub struct Rpc<V> {
     /// Category of RPC.
-    pub kind: Kind,
+    pub kind: Kind<V>,
     /// Sender node info (IP address updated on reception).
     pub sender: routing::NodeInfo,
 }
 
-impl Rpc {
+impl<V> Rpc<V>
+where
+    V: Storable,
+{
     /// Constructs a ping RPC. Pings simply carry information about the
     /// sender, and expect a response indicating that the receiving node
     /// is alive.
-    pub fn ping(sender: routing::NodeInfo) -> Rpc {
+    pub fn ping(sender: routing::NodeInfo) -> Self {
         Rpc {
             kind: Kind::Ping,
             sender,
@@ -31,7 +35,7 @@ impl Rpc {
     }
 
     /// Constructs a ping response.
-    pub fn ping_response(sender: routing::NodeInfo) -> Rpc {
+    pub fn ping_response(sender: routing::NodeInfo) -> Self {
         Rpc {
             kind: Kind::PingResponse,
             sender,
@@ -41,7 +45,7 @@ impl Rpc {
     /// Constructs an RPC asking for a the results of a table node lookup. The objective
     /// of this RPC is to locate a particular node while minimizing network traffic. In other
     /// words, the process short-circuits when the target node is found.
-    pub fn locate(sender: routing::NodeInfo, id_to_find: SubotaiHash) -> Rpc {
+    pub fn locate(sender: routing::NodeInfo, id_to_find: SubotaiHash) -> Self {
         let payload = Arc::new(LocatePayload { id_to_find });
         Rpc {
             kind: Kind::Locate(payload),
@@ -54,7 +58,7 @@ impl Rpc {
         sender: routing::NodeInfo,
         id_to_find: SubotaiHash,
         result: routing::LookupResult,
-    ) -> Rpc {
+    ) -> Self {
         let payload = Arc::new(LocateResponsePayload { id_to_find, result });
         Rpc {
             kind: Kind::LocateResponse(payload),
@@ -63,7 +67,7 @@ impl Rpc {
     }
 
     /// Constructs an RPC asking for a the results of a storage lookup.
-    pub fn retrieve(sender: routing::NodeInfo, key_to_find: SubotaiHash) -> Rpc {
+    pub fn retrieve(sender: routing::NodeInfo, key_to_find: SubotaiHash) -> Self {
         let payload = Arc::new(RetrievePayload { key_to_find });
         Rpc {
             kind: Kind::Retrieve(payload),
@@ -75,8 +79,8 @@ impl Rpc {
     pub fn retrieve_response(
         sender: routing::NodeInfo,
         key_to_find: SubotaiHash,
-        result: RetrieveResult,
-    ) -> Rpc {
+        result: RetrieveResult<V>,
+    ) -> Self {
         let payload = Arc::new(RetrieveResponsePayload {
             key_to_find,
             result,
@@ -90,7 +94,7 @@ impl Rpc {
     /// Constructs a probe RPC. It asks the receiving node to provide a list of
     /// K nodes close to a given node. It's a simpler version of the locate
     /// RPC, that doesn't end early if the node is found.
-    pub fn probe(sender: routing::NodeInfo, id_to_probe: SubotaiHash) -> Rpc {
+    pub fn probe(sender: routing::NodeInfo, id_to_probe: SubotaiHash) -> Self {
         let payload = Arc::new(ProbePayload { id_to_probe });
         Rpc {
             kind: Kind::Probe(payload),
@@ -103,7 +107,7 @@ impl Rpc {
         sender: routing::NodeInfo,
         nodes: Vec<routing::NodeInfo>,
         id_to_probe: SubotaiHash,
-    ) -> Rpc {
+    ) -> Self {
         let payload = Arc::new(ProbeResponsePayload { id_to_probe, nodes });
         Rpc {
             kind: Kind::ProbeResponse(payload),
@@ -115,9 +119,9 @@ impl Rpc {
     pub fn store(
         sender: routing::NodeInfo,
         key: SubotaiHash,
-        entry: storage::StorageEntry,
+        entry: V,
         expiration: DateTime<Utc>,
-    ) -> Rpc {
+    ) -> Self {
         let payload = Arc::new(StorePayload {
             key,
             entry,
@@ -132,8 +136,8 @@ impl Rpc {
     pub fn mass_store(
         sender: routing::NodeInfo,
         key: SubotaiHash,
-        entries_and_expirations: Vec<(storage::StorageEntry, DateTime<Utc>)>,
-    ) -> Rpc {
+        entries_and_expirations: Vec<(V, DateTime<Utc>)>,
+    ) -> Self {
         let payload = Arc::new(MassStorePayload {
             key,
             entries_and_expirations,
@@ -149,7 +153,7 @@ impl Rpc {
         sender: routing::NodeInfo,
         key: SubotaiHash,
         result: storage::StoreResult,
-    ) -> Rpc {
+    ) -> Self {
         let payload = Arc::new(StoreResponsePayload { key, result });
         Rpc {
             kind: Kind::StoreResponse(payload),
@@ -166,7 +170,7 @@ impl Rpc {
     }
 
     /// Deserializes into an RPC structure.
-    pub fn deserialize(serialized: &[u8]) -> bincode::Result<Rpc> {
+    pub fn deserialize(serialized: &[u8]) -> bincode::Result<Self> {
         bincode::DefaultOptions::new()
             .with_limit(node::SOCKET_BUFFER_SIZE_BYTES as u64)
             .deserialize(serialized)
@@ -202,7 +206,7 @@ impl Rpc {
 
     /// Reports whether the RPC is a RetrieveResponse that found
     /// a particular key.
-    pub fn successfully_retrieved(&self, key: &SubotaiHash) -> Option<Vec<storage::StorageEntry>> {
+    pub fn successfully_retrieved(&self, key: &SubotaiHash) -> Option<Vec<V>> {
         if let Kind::RetrieveResponse(ref payload) = self.kind {
             match payload.result {
                 RetrieveResult::Found(ref entries) if &payload.key_to_find == key => {
@@ -250,24 +254,24 @@ impl Rpc {
 
 /// Types of Subotai RPCs. Some of them contain reference counted payloads.
 #[derive(Serialize, Deserialize, Eq, PartialEq, Debug, Clone)]
-pub enum Kind {
+pub enum Kind<V> {
     Ping,
     PingResponse,
-    Store(Arc<StorePayload>),
-    MassStore(Arc<MassStorePayload>),
+    Store(Arc<StorePayload<V>>),
+    MassStore(Arc<MassStorePayload<V>>),
     StoreResponse(Arc<StoreResponsePayload>),
     Locate(Arc<LocatePayload>),
     LocateResponse(Arc<LocateResponsePayload>),
     Retrieve(Arc<RetrievePayload>),
-    RetrieveResponse(Arc<RetrieveResponsePayload>),
+    RetrieveResponse(Arc<RetrieveResponsePayload<V>>),
     Probe(Arc<ProbePayload>),
     ProbeResponse(Arc<ProbeResponsePayload>),
 }
 
 #[derive(Serialize, Deserialize, Eq, PartialEq, Debug, Clone)]
-pub struct StorePayload {
+pub struct StorePayload<V> {
     pub key: SubotaiHash,
-    pub entry: storage::StorageEntry,
+    pub entry: V,
     pub expiration: DateTime<Utc>,
 }
 
@@ -278,9 +282,9 @@ pub struct StoreResponsePayload {
 }
 
 #[derive(Serialize, Deserialize, Eq, PartialEq, Debug, Clone)]
-pub struct MassStorePayload {
+pub struct MassStorePayload<V> {
     pub key: SubotaiHash,
-    pub entries_and_expirations: Vec<(storage::StorageEntry, DateTime<Utc>)>,
+    pub entries_and_expirations: Vec<(V, DateTime<Utc>)>,
 }
 
 /// Includes the ID to find and the amount of nodes required.
@@ -297,8 +301,8 @@ pub struct LocateResponsePayload {
 }
 
 #[derive(Serialize, Deserialize, Eq, PartialEq, Debug, Clone)]
-pub enum RetrieveResult {
-    Found(Vec<storage::StorageEntry>),
+pub enum RetrieveResult<V> {
+    Found(Vec<V>),
     Closest(Vec<routing::NodeInfo>),
 }
 
@@ -308,9 +312,9 @@ pub struct RetrievePayload {
 }
 
 #[derive(Serialize, Deserialize, Eq, PartialEq, Debug, Clone)]
-pub struct RetrieveResponsePayload {
+pub struct RetrieveResponsePayload<V> {
     pub key_to_find: SubotaiHash,
-    pub result: RetrieveResult,
+    pub result: RetrieveResult<V>,
 }
 
 #[derive(Serialize, Deserialize, Eq, PartialEq, Debug, Clone)]
@@ -331,13 +335,14 @@ pub struct ProbeResponsePayload {
 mod tests {
     use super::*;
     use crate::hash::SubotaiHash;
+    use crate::storage::StorageEntry;
+    use routing;
     use std::net;
     use std::str::FromStr;
-    use {routing, storage};
 
     #[test]
     fn serdes_for_ping() {
-        let ping = Rpc::ping(node_info_no_net(SubotaiHash::random()));
+        let ping: Rpc<StorageEntry> = Rpc::ping(node_info_no_net(SubotaiHash::random()));
         let serialized_ping = ping.serialize();
         let deserialized_ping = Rpc::deserialize(&serialized_ping).unwrap();
         assert_eq!(ping, deserialized_ping);
@@ -349,10 +354,10 @@ mod tests {
         let store = Rpc::store(
             node_info_no_net(SubotaiHash::random()),
             SubotaiHash::random(),
-            storage::StorageEntry::Blob(Vec::<u8>::new()),
+            StorageEntry::Blob(Vec::<u8>::new()),
             now,
         );
-        let deserialized_store = Rpc::deserialize(&store.serialize()).unwrap();
+        let deserialized_store: Rpc<StorageEntry> = Rpc::deserialize(&store.serialize()).unwrap();
         if let Kind::Store(ref payload) = deserialized_store.kind {
             assert_eq!(now, payload.expiration);
         } else {
