@@ -29,6 +29,7 @@ pub mod node;
 mod routing;
 mod rpc;
 mod storage;
+pub use storage::Storable;
 
 mod error;
 pub use error::SubotaiError;
